@@ -43,6 +43,8 @@ found_people      — the main registry (FK to hospitals, servicios, api_keys)
 
 Every `found_people` record carries an `api_key_id` so you always know which team submitted it.
 
+See the full [ER diagram](docs/er-diagram.md) for column details, relationships, and indexes.
+
 ---
 
 ## API Reference
