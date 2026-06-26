@@ -2,14 +2,13 @@ import hashlib
 import re
 import unicodedata
 import uuid
-from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import ApiKey, FoundPerson, Hospital, Servicio
+from app.models import ApiKey, FoundPerson, Instalacion, Ubicacion
 from app.schemas import PersonCreate, SearchParams
 
 
@@ -19,33 +18,53 @@ def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
-def _compute_hash(full_name: str, document_id: str | None, hospital: str | None) -> str:
-    parts = "|".join([full_name.lower(), document_id or "", hospital or ""])
+def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str | None, tipo_instalacion: str | None) -> str:
+    parts = "|".join([full_name.lower(), document_id or "", ubicacion_actual or "", tipo_instalacion or ""])
     return hashlib.sha256(parts.encode()).hexdigest()
 
 
-async def find_or_create_hospital(db: AsyncSession, name: str) -> Hospital:
-    norm = _normalize(name)
-    result = await db.execute(select(Hospital).where(Hospital.normalized_name == norm))
-    hospital = result.scalar_one_or_none()
-    if not hospital:
-        hospital = Hospital(name=name, normalized_name=norm)
-        db.add(hospital)
-        await db.flush()
-    return hospital
-
-
-async def find_or_create_servicio(db: AsyncSession, hospital_id: uuid.UUID, name: str) -> Servicio:
-    norm = _normalize(name)
+async def find_or_create_instalacion(db: AsyncSession, tipo: str, nombre: str) -> Instalacion:
+    norm = _normalize(nombre)
     result = await db.execute(
-        select(Servicio).where(Servicio.hospital_id == hospital_id, Servicio.normalized_name == norm)
+        select(Instalacion).where(Instalacion.tipo == tipo, Instalacion.normalized_nombre == norm)
     )
-    servicio = result.scalar_one_or_none()
-    if not servicio:
-        servicio = Servicio(hospital_id=hospital_id, name=name, normalized_name=norm)
-        db.add(servicio)
+    instalacion = result.scalar_one_or_none()
+    if not instalacion:
+        instalacion = Instalacion(tipo=tipo, nombre=nombre, normalized_nombre=norm)
+        db.add(instalacion)
         await db.flush()
-    return servicio
+    return instalacion
+
+
+async def find_or_create_ubicacion(
+    db: AsyncSession,
+    instalacion_id: uuid.UUID | None,
+    detalles: str | None,
+) -> Ubicacion:
+    norm_detalles = _normalize(detalles) if detalles else ""
+    result = await db.execute(
+        select(Ubicacion).where(
+            Ubicacion.instalacion_id == instalacion_id,
+            Ubicacion.normalized_detalles == norm_detalles,
+        )
+    )
+    ubicacion = result.scalar_one_or_none()
+    if not ubicacion:
+        ubicacion = Ubicacion(
+            instalacion_id=instalacion_id,
+            detalles=detalles,
+            normalized_detalles=norm_detalles,
+        )
+        db.add(ubicacion)
+        await db.flush()
+    return ubicacion
+
+
+def _person_load_options():
+    return [
+        selectinload(FoundPerson.ubicacion).selectinload(Ubicacion.instalacion),
+        selectinload(FoundPerson.api_key),
+    ]
 
 
 async def upsert_person(
@@ -53,18 +72,19 @@ async def upsert_person(
     payload: PersonCreate,
     api_key_id: uuid.UUID | None = None,
 ) -> tuple[FoundPerson, bool]:
-    hospital_id: uuid.UUID | None = None
-    servicio_id: uuid.UUID | None = None
+    ubicacion_id: uuid.UUID | None = None
 
-    if payload.hospital:
-        h = await find_or_create_hospital(db, payload.hospital)
-        hospital_id = h.id
-        if payload.servicio:
-            s = await find_or_create_servicio(db, hospital_id, payload.servicio)
-            servicio_id = s.id
+    if payload.ubicacion_actual:
+        tipo = payload.tipo_instalacion or "unknown"
+        instalacion = await find_or_create_instalacion(db, tipo, payload.ubicacion_actual)
+        ubicacion = await find_or_create_ubicacion(db, instalacion.id, payload.ubicacion_detalles)
+        ubicacion_id = ubicacion.id
+    elif payload.ubicacion_detalles:
+        ubicacion = await find_or_create_ubicacion(db, None, payload.ubicacion_detalles)
+        ubicacion_id = ubicacion.id
 
     source_hash = payload.source_hash or _compute_hash(
-        payload.full_name, payload.document_id, payload.hospital
+        payload.full_name, payload.document_id, payload.ubicacion_actual, payload.tipo_instalacion
     )
 
     stmt = (
@@ -73,10 +93,10 @@ async def upsert_person(
             full_name=payload.full_name,
             document_id=payload.document_id,
             age=payload.age,
-            hospital_id=hospital_id,
-            servicio_id=servicio_id,
+            ubicacion_id=ubicacion_id,
             lugar_procedencia=payload.lugar_procedencia,
             relevant_info=payload.relevant_info,
+            fallecido=payload.fallecido,
             source_url=payload.source_url,
             source_hash=source_hash,
             status=payload.status,
@@ -89,36 +109,31 @@ async def upsert_person(
                 "full_name": payload.full_name,
                 "document_id": payload.document_id,
                 "age": payload.age,
-                "hospital_id": hospital_id,
-                "servicio_id": servicio_id,
+                "ubicacion_id": ubicacion_id,
                 "lugar_procedencia": payload.lugar_procedencia,
                 "relevant_info": payload.relevant_info,
+                "fallecido": payload.fallecido,
                 "source_url": payload.source_url,
                 "status": payload.status,
                 "raw": payload.raw,
                 "updated_at": func.now(),
             },
         )
-        .returning(FoundPerson.id, FoundPerson.source_hash)
+        # xmax = 0 on a freshly inserted row; non-zero when ON CONFLICT updated it.
+        .returning(FoundPerson.id, literal_column("(xmax = 0)").label("inserted"))
     )
 
     result = await db.execute(stmt)
     row = result.fetchone()
     person = await _load_person(db, row[0])
-    return person, True
+    return person, bool(row[1])
 
 
 async def _load_person(db: AsyncSession, person_id: uuid.UUID) -> FoundPerson:
     result = await db.execute(
         select(FoundPerson)
         .where(FoundPerson.id == person_id)
-        .options(
-            selectinload(FoundPerson.hospital),
-            selectinload(FoundPerson.servicio),
-            selectinload(FoundPerson.api_key),
-        )
-        # upsert_person mutates the row via a Core ON CONFLICT DO UPDATE, which the
-        # ORM identity map can't see; force a refresh so we return post-upsert state.
+        .options(*_person_load_options())
         .execution_options(populate_existing=True)
     )
     return result.scalar_one()
@@ -127,11 +142,7 @@ async def _load_person(db: AsyncSession, person_id: uuid.UUID) -> FoundPerson:
 async def search_people(db: AsyncSession, params: SearchParams) -> tuple[list[FoundPerson], int]:
     base = (
         select(FoundPerson)
-        .options(
-            selectinload(FoundPerson.hospital),
-            selectinload(FoundPerson.servicio),
-            selectinload(FoundPerson.api_key),
-        )
+        .options(*_person_load_options())
         .where(FoundPerson.status != "removed")
     )
 
@@ -139,9 +150,7 @@ async def search_people(db: AsyncSession, params: SearchParams) -> tuple[list[Fo
         base = base.where(FoundPerson.document_id == params.document_id)
 
     if params.name:
-        base = base.where(
-            func.unaccent(FoundPerson.full_name).ilike(f"%{params.name}%")
-        )
+        base = base.where(func.unaccent(FoundPerson.full_name).ilike(f"%{params.name}%"))
 
     if params.q:
         pattern = f"%{params.q}%"
@@ -151,15 +160,18 @@ async def search_people(db: AsyncSession, params: SearchParams) -> tuple[list[Fo
             | func.unaccent(FoundPerson.relevant_info).ilike(pattern)
         )
 
-    if params.hospital:
-        base = base.join(FoundPerson.hospital).where(
-            func.unaccent(Hospital.name).ilike(f"%{params.hospital}%")
-        )
+    if params.ubicacion or params.tipo_instalacion:
+        base = base.join(FoundPerson.ubicacion).join(Ubicacion.instalacion)
+        if params.ubicacion:
+            base = base.where(func.unaccent(Instalacion.nombre).ilike(f"%{params.ubicacion}%"))
+        if params.tipo_instalacion:
+            base = base.where(Instalacion.tipo == params.tipo_instalacion)
 
     if params.procedencia:
-        base = base.where(
-            func.unaccent(FoundPerson.lugar_procedencia).ilike(f"%{params.procedencia}%")
-        )
+        base = base.where(func.unaccent(FoundPerson.lugar_procedencia).ilike(f"%{params.procedencia}%"))
+
+    if params.fallecido is not None:
+        base = base.where(FoundPerson.fallecido == params.fallecido)
 
     if params.status:
         base = base.where(FoundPerson.status == params.status)
@@ -174,13 +186,7 @@ async def search_people(db: AsyncSession, params: SearchParams) -> tuple[list[Fo
 
 async def get_person_by_id(db: AsyncSession, person_id: uuid.UUID) -> FoundPerson | None:
     result = await db.execute(
-        select(FoundPerson)
-        .where(FoundPerson.id == person_id)
-        .options(
-            selectinload(FoundPerson.hospital),
-            selectinload(FoundPerson.servicio),
-            selectinload(FoundPerson.api_key),
-        )
+        select(FoundPerson).where(FoundPerson.id == person_id).options(*_person_load_options())
     )
     return result.scalar_one_or_none()
 

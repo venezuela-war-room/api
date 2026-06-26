@@ -13,16 +13,6 @@ from pathlib import Path
 
 import httpx
 
-COLUMN_MAP = {
-    "Hospital / Área": "hospital",
-    "Nombre": "full_name",
-    "Edad": "age",
-    "Cédula": "document_id",
-    "Procedencia / Zona": "lugar_procedencia",
-    "Servicio / Lista": "servicio",
-    "Nota": "relevant_info",
-}
-
 BATCH_SIZE = 200
 
 
@@ -45,12 +35,14 @@ def parse_row(row: dict) -> dict | None:
         "full_name": full_name,
         "document_id": document_id,
         "age": age,
-        "hospital": row.get("Hospital / Área", "").strip() or None,
-        "servicio": row.get("Servicio / Lista", "").strip() or None,
+        "ubicacion_actual": row.get("Hospital / Área", "").strip() or None,
+        "tipo_instalacion": "hospital",
+        "ubicacion_detalles": row.get("Servicio / Lista", "").strip() or None,
         "lugar_procedencia": row.get("Procedencia / Zona", "").strip() or None,
         "relevant_info": row.get("Nota", "").strip() or None,
         "source_url": "https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026",
         "status": "verified",
+        "fallecido": False,
     }
 
 
@@ -69,8 +61,8 @@ def import_csv(csv_path: Path, api_url: str, admin_key: str) -> None:
 
     print(f"Parsed {len(records)} records ({skipped} skipped)")
 
-    total_upserted = 0
-    total_skipped = 0
+    total_created = 0
+    total_updated = 0
 
     with httpx.Client(timeout=60) as client:
         for i in range(0, len(records), BATCH_SIZE):
@@ -84,11 +76,11 @@ def import_csv(csv_path: Path, api_url: str, admin_key: str) -> None:
                 print(f"  ERROR batch {i//BATCH_SIZE + 1}: {r.status_code} {r.text}", file=sys.stderr)
                 continue
             body = r.json()
-            total_upserted += body.get("upserted", 0)
-            total_skipped += body.get("skipped", 0)
-            print(f"  Batch {i//BATCH_SIZE + 1}: upserted={body.get('upserted')} skipped={body.get('skipped')}")
+            total_created += body.get("created", 0)
+            total_updated += body.get("updated", 0)
+            print(f"  Batch {i//BATCH_SIZE + 1}: created={body.get('created')} updated={body.get('updated')}")
 
-    print(f"\nDone. Total upserted: {total_upserted}, total skipped: {total_skipped}")
+    print(f"\nDone. Total created: {total_created}, total updated: {total_updated}")
 
 
 if __name__ == "__main__":

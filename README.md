@@ -122,11 +122,11 @@ See the full [ER diagram](docs/er-diagram.md) for column details, relationships,
 }
 ```
 
-If `source_hash` is omitted it is auto-generated from `sha256(full_name|document_id|hospital)`.
+If `source_hash` is omitted it is auto-generated from `sha256(full_name|document_id|ubicacion_actual|tipo_instalacion)`.
 
-**Bulk response:**
+**Bulk response:** `created` counts new rows, `updated` counts rows that already existed (matched on `source_hash`) and were refreshed.
 ```json
-{ "upserted": 42, "skipped": 0, "data": [...] }
+{ "created": 42, "updated": 3, "data": [...] }
 ```
 
 ### Master admin endpoints (`X-Master-Key` header required)

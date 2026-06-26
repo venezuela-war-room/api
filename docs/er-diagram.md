@@ -3,18 +3,20 @@
 ```mermaid
 erDiagram
 
-    hospitals {
+    instalaciones {
         UUID        id                  PK  "gen_random_uuid()"
-        VARCHAR     name                    "display name"
-        VARCHAR     normalized_name     UK  "lowercase + unaccent, dedup key"
+        VARCHAR     tipo                    "hospital | albergue | morgue | punto_concentracion | centro_medico"
+        VARCHAR     nombre                  "display name"
+        VARCHAR     normalized_nombre       "lowercase + unaccent, dedup key"
+        VARCHAR     direccion               "optional address"
         TIMESTAMPTZ created_at              "auto"
     }
 
-    servicios {
+    ubicaciones {
         UUID        id                  PK
-        UUID        hospital_id         FK
-        VARCHAR     name                    "display name"
-        VARCHAR     normalized_name         "lowercase + unaccent"
+        UUID        instalacion_id      FK  "nullable — null when no registered facility"
+        TEXT        detalles                "ward, section, floor, or custom address"
+        VARCHAR     normalized_detalles     "normalize(detalles) or '', used for dedup"
         TIMESTAMPTZ created_at              "auto"
     }
 
@@ -33,10 +35,10 @@ erDiagram
         VARCHAR     full_name               "required"
         VARCHAR     document_id             "cédula, digits only"
         INTEGER     age
-        UUID        hospital_id         FK  "nullable"
-        UUID        servicio_id         FK  "nullable"
+        UUID        ubicacion_id        FK  "nullable — person's current location"
         VARCHAR     lugar_procedencia       "zone / place of origin"
         TEXT        relevant_info           "notes, diagnosis, source info"
+        BOOLEAN     fallecido               "deceased flag, default false"
         VARCHAR     source_url
         VARCHAR     source_hash         UK  "sha256 dedup key"
         VARCHAR     status                  "verified | citizen_report | needs_review | removed"
@@ -46,28 +48,54 @@ erDiagram
         TIMESTAMPTZ updated_at              "auto, updated on upsert"
     }
 
-    hospitals   ||--o{ servicios    : "has wards"
-    hospitals   ||--o{ found_people : "treated at"
-    servicios   ||--o{ found_people : "listed under"
-    api_keys    ||--o{ found_people : "ingested by"
+    instalaciones ||--o{ ubicaciones  : "referenced by"
+    ubicaciones   ||--o{ found_people : "location of"
+    api_keys      ||--o{ found_people : "ingested by"
 ```
 
 ## Relationships
 
 | From | Cardinality | To | Description |
 |---|---|---|---|
-| `hospitals` | 1 → many | `servicios` | A hospital has zero or more wards/sections |
-| `hospitals` | 1 → many | `found_people` | A hospital has zero or more patient records |
-| `servicios` | 1 → many | `found_people` | A ward/section has zero or more patient records |
+| `instalaciones` | 1 → many | `ubicaciones` | A facility can have many location instances (one per ward/section/detail) |
+| `ubicaciones` | 1 → many | `found_people` | A location can have many people (e.g. all patients in the same ward) |
 | `api_keys` | 1 → many | `found_people` | A team API key is linked to all records it ingested |
+
+## Location model explained
+
+```
+instalaciones           — the registered facility (Hospital Vargas, Albergue Catia, etc.)
+    ↓ (optional FK)
+ubicaciones             — a specific location within or without a facility
+    · instalacion_id    → points to a known facility, OR null for unknown/ad-hoc locations
+    · detalles          → "Sala de Emergencias, Piso 3" OR "Calle Principal #5, Catia"
+    ↓
+found_people.ubicacion_id
+```
+
+**Example flows:**
+- Person at a registered hospital ward: `instalacion → Hospital Vargas` + `detalles = "UCI"`
+- Person at a shelter: `instalacion → Albergue Municipal Catia` + `detalles = null`
+- Person at an unknown address: `instalacion_id = null` + `detalles = "Casa amarilla, Av. Principal, La Guaira"`
+
+## Valid `tipo` values for `instalaciones`
+
+| Tipo | Description |
+|---|---|
+| `hospital` | Full hospitals |
+| `albergue` | Shelters and temporary housing |
+| `centro_medico` | Clinics and smaller medical centers |
+| `morgue` | Morgues — for identification of deceased |
+| `punto_concentracion` | Staging/assembly points set up after the earthquake |
 
 ## Notes
 
-- `hospital_id` and `servicio_id` on `found_people` are **nullable** — a record can exist without a known hospital (e.g. citizen reports)
-- `api_key_id` is nullable only for records created before multi-tenant keys were introduced
-- `source_hash` is the **deduplication key**: bulk upserts use `ON CONFLICT (source_hash) DO UPDATE`, so re-ingesting the same source is always safe
-- `hospitals.normalized_name` and `(servicios.hospital_id, servicios.normalized_name)` carry unique constraints — facility names are deduplicated with `unaccent` + lowercase normalization on every ingest
-- `status = 'removed'` is a soft delete — records remain in the DB and are hidden from default search results but can be queried explicitly with `?status=removed`
+- `ubicacion_id` on `found_people` is nullable — a record can exist without a known location (e.g. unconfirmed citizen reports)
+- `api_key_id` on `found_people` records which team submitted each row — useful for audit and data quality tracking
+- `source_hash` is the **deduplication key**: bulk upserts use `ON CONFLICT (source_hash) DO UPDATE`
+- `fallecido = true` does NOT set `status = 'removed'` — deceased records remain publicly searchable for family identification
+- `status = 'removed'` is a soft delete for data quality reasons (duplicates, errors); it hides records from default search
+- `ubicaciones` deduplicates by `(instalacion_id, normalized_detalles)` — same ward at the same hospital → same `ubicacion` row shared across all people there
 
 ## Indexes
 
@@ -76,8 +104,9 @@ erDiagram
 | `found_people` | `document_id` | B-tree | Exact cédula lookup |
 | `found_people` | `status` | B-tree | Status filter |
 | `found_people` | `updated_at DESC` | B-tree | Default sort |
-| `found_people` | `hospital_id` | B-tree | Hospital filter join |
+| `found_people` | `ubicacion_id` | B-tree | Location filter join |
 | `found_people` | `api_key_id` | B-tree | Per-team record queries |
+| `found_people` | `fallecido` | B-tree | Deceased filter |
 | `found_people` | `full_name` (GIN trgm) | GIN | Fuzzy name search via `pg_trgm` |
-| `hospitals` | `normalized_name` | Unique | Facility dedup |
-| `servicios` | `(hospital_id, normalized_name)` | Unique | Ward dedup per hospital |
+| `instalaciones` | `(tipo, normalized_nombre)` | Unique | Facility dedup per type |
+| `ubicaciones` | `(instalacion_id, normalized_detalles)` | Unique | Location dedup per facility+ward |

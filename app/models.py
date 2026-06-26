@@ -8,31 +8,42 @@ from sqlalchemy.sql import func
 
 from app.database import Base
 
-
-class Hospital(Base):
-    __tablename__ = "hospitals"
-
-    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    normalized_name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
-
-    servicios: Mapped[list["Servicio"]] = relationship(back_populates="hospital")
-    people: Mapped[list["FoundPerson"]] = relationship(back_populates="hospital")
+TIPOS_INSTALACION = {"hospital", "albergue", "morgue", "punto_concentracion", "centro_medico", "unknown"}
 
 
-class Servicio(Base):
-    __tablename__ = "servicios"
-    __table_args__ = (UniqueConstraint("hospital_id", "normalized_name", name="uq_servicio_hospital"),)
+class Instalacion(Base):
+    __tablename__ = "instalaciones"
+    __table_args__ = (UniqueConstraint("tipo", "normalized_nombre", name="uq_instalacion_tipo_nombre"),)
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
-    hospital_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("hospitals.id"), nullable=False)
-    name: Mapped[str] = mapped_column(String, nullable=False)
-    normalized_name: Mapped[str] = mapped_column(String, nullable=False)
+    tipo: Mapped[str] = mapped_column(String, nullable=False)
+    nombre: Mapped[str] = mapped_column(String, nullable=False)
+    normalized_nombre: Mapped[str] = mapped_column(String, nullable=False)
+    direccion: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
-    hospital: Mapped["Hospital"] = relationship(back_populates="servicios")
-    people: Mapped[list["FoundPerson"]] = relationship(back_populates="servicio")
+    ubicaciones: Mapped[list["Ubicacion"]] = relationship(back_populates="instalacion")
+
+
+class Ubicacion(Base):
+    __tablename__ = "ubicaciones"
+    __table_args__ = (
+        UniqueConstraint(
+            "instalacion_id",
+            "normalized_detalles",
+            name="uq_ubicacion_instalacion_detalles",
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    instalacion_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("instalaciones.id"), nullable=True)
+    detalles: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_detalles: Mapped[str] = mapped_column(String, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
+
+    instalacion: Mapped["Instalacion | None"] = relationship(back_populates="ubicaciones")
+    people: Mapped[list["FoundPerson"]] = relationship(back_populates="ubicacion")
 
 
 class ApiKey(Base):
@@ -56,10 +67,10 @@ class FoundPerson(Base):
     full_name: Mapped[str] = mapped_column(String, nullable=False)
     document_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     age: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    hospital_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("hospitals.id"), nullable=True, index=True)
-    servicio_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("servicios.id"), nullable=True)
+    ubicacion_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ubicaciones.id"), nullable=True, index=True)
     lugar_procedencia: Mapped[str | None] = mapped_column(String, nullable=True)
     relevant_info: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fallecido: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     source_url: Mapped[str | None] = mapped_column(String, nullable=True)
     source_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String, default="verified", nullable=False, index=True)
@@ -68,6 +79,5 @@ class FoundPerson(Base):
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    hospital: Mapped["Hospital | None"] = relationship(back_populates="people")
-    servicio: Mapped["Servicio | None"] = relationship(back_populates="people")
+    ubicacion: Mapped["Ubicacion | None"] = relationship(back_populates="people")
     api_key: Mapped["ApiKey | None"] = relationship(back_populates="people")

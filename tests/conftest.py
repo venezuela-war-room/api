@@ -17,11 +17,28 @@ from app.models import ApiKey
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 _base_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto")
-TEST_DB_URL = _base_url.rsplit("/", 1)[0] + "/terremoto_test"
+_server_url, _ = _base_url.rsplit("/", 1)
+TEST_DB_NAME = "terremoto_test"
+TEST_DB_URL = f"{_server_url}/{TEST_DB_NAME}"
+
+
+async def _ensure_test_db() -> None:
+    """Create the test database if it doesn't exist (CREATE DATABASE needs AUTOCOMMIT)."""
+    admin_engine = create_async_engine(f"{_server_url}/postgres", isolation_level="AUTOCOMMIT")
+    try:
+        async with admin_engine.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": TEST_DB_NAME}
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{TEST_DB_NAME}"'))
+    finally:
+        await admin_engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="session")
 async def engine():
+    await _ensure_test_db()
     _engine = create_async_engine(TEST_DB_URL, echo=False)
     async with _engine.begin() as conn:
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))

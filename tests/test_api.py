@@ -59,17 +59,20 @@ async def test_bulk_upsert_valid(client: AsyncClient, admin_key):
             {
                 "full_name": "Álvarez Maikeli API Test",
                 "document_id": "300454425",
-                "hospital": "Hosp. José Gregorio API Test",
-                "servicio": "Reporte pacientes",
+                "ubicacion_actual": "Hosp. José Gregorio API Test",
+                "tipo_instalacion": "hospital",
+                "ubicacion_detalles": "Reporte pacientes",
                 "lugar_procedencia": "La Guaira",
                 "relevant_info": "Politraumatismo",
-                "source_hash": "api-test-bulk-unique-1",
+                "source_hash": "api-test-bulk-unique-v2-1",
+                "fallecido": False,
             },
             {
                 "full_name": "Aguero Johanna API Test",
                 "document_id": "37454987",
-                "hospital": "Hosp. José Gregorio API Test",
-                "source_hash": "api-test-bulk-unique-2",
+                "ubicacion_actual": "Hosp. José Gregorio API Test",
+                "tipo_instalacion": "hospital",
+                "source_hash": "api-test-bulk-unique-v2-2",
             },
         ]
     }
@@ -80,9 +83,25 @@ async def test_bulk_upsert_valid(client: AsyncClient, admin_key):
     )
     assert r.status_code == 201
     body = r.json()
-    assert body["upserted"] == 2
+    assert body["created"] == 2
+    assert body["updated"] == 0
     assert len(body["data"]) == 2
     assert body["data"][0]["api_key"]["team_name"] == "test-team"
+    assert body["data"][0]["ubicacion"]["instalacion"]["tipo"] == "hospital"
+    assert body["data"][0]["fallecido"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_reingest_counts_as_updated(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    payload = {"people": [{"full_name": "Reingest Counts Test", "source_hash": "reingest-counts-unique"}]}
+    first = await client.post("/api/v1/found-people/bulk", json=payload, headers={"X-Admin-Key": raw_key})
+    assert first.json() == {**first.json(), "created": 1, "updated": 0}
+
+    second = await client.post("/api/v1/found-people/bulk", json=payload, headers={"X-Admin-Key": raw_key})
+    body = second.json()
+    assert body["created"] == 0
+    assert body["updated"] == 1
 
 
 @pytest.mark.asyncio
@@ -102,7 +121,7 @@ async def test_search_by_name(client: AsyncClient, admin_key):
     raw_key, _ = admin_key
     await client.post(
         "/api/v1/found-people/bulk",
-        json={"people": [{"full_name": "Hernandez Carlos Search", "source_hash": "name-search-api-unique"}]},
+        json={"people": [{"full_name": "Hernandez Carlos Search", "source_hash": "name-search-api-v2"}]},
         headers={"X-Admin-Key": raw_key},
     )
     r = await client.get("/api/v1/found-people?name=Hernandez")
@@ -115,7 +134,7 @@ async def test_search_by_document_id(client: AsyncClient, admin_key):
     raw_key, _ = admin_key
     await client.post(
         "/api/v1/found-people/bulk",
-        json={"people": [{"full_name": "DocId Search API", "document_id": "11201504", "source_hash": "docid-api-search-unique"}]},
+        json={"people": [{"full_name": "DocId Search API", "document_id": "11201504", "source_hash": "docid-api-v2"}]},
         headers={"X-Admin-Key": raw_key},
     )
     r = await client.get("/api/v1/found-people?document_id=11201504")
@@ -124,16 +143,44 @@ async def test_search_by_document_id(client: AsyncClient, admin_key):
 
 
 @pytest.mark.asyncio
-async def test_search_by_hospital(client: AsyncClient, admin_key):
+async def test_search_by_ubicacion(client: AsyncClient, admin_key):
     raw_key, _ = admin_key
     await client.post(
         "/api/v1/found-people/bulk",
-        json={"people": [{"full_name": "Hospital Search Test", "hospital": "Hosp. Luciani API", "source_hash": "hosp-api-search-unique"}]},
+        json={"people": [{"full_name": "Ubicacion Search Test", "ubicacion_actual": "Hosp. Luciani API v2", "tipo_instalacion": "hospital", "source_hash": "ubicacion-api-v2"}]},
         headers={"X-Admin-Key": raw_key},
     )
-    r = await client.get("/api/v1/found-people?hospital=Luciani")
+    r = await client.get("/api/v1/found-people?ubicacion=Luciani")
     assert r.status_code == 200
     assert len(r.json()["data"]) >= 1
+
+
+@pytest.mark.asyncio
+async def test_search_by_tipo_instalacion(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    await client.post(
+        "/api/v1/found-people/bulk",
+        json={"people": [{"full_name": "Albergue Person API", "ubicacion_actual": "Albergue Catia API", "tipo_instalacion": "albergue", "source_hash": "albergue-api-v2"}]},
+        headers={"X-Admin-Key": raw_key},
+    )
+    r = await client.get("/api/v1/found-people?tipo_instalacion=albergue")
+    assert r.status_code == 200
+    data = r.json()["data"]
+    assert len(data) >= 1
+    assert all(p["ubicacion"]["instalacion"]["tipo"] == "albergue" for p in data)
+
+
+@pytest.mark.asyncio
+async def test_search_fallecido(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    await client.post(
+        "/api/v1/found-people/bulk",
+        json={"people": [{"full_name": "Fallecido API Test", "fallecido": True, "source_hash": "fallecido-api-v2"}]},
+        headers={"X-Admin-Key": raw_key},
+    )
+    r = await client.get("/api/v1/found-people?fallecido=true")
+    assert r.status_code == 200
+    assert all(p["fallecido"] for p in r.json()["data"])
 
 
 @pytest.mark.asyncio
@@ -141,7 +188,7 @@ async def test_get_by_id(client: AsyncClient, admin_key):
     raw_key, _ = admin_key
     create_r = await client.post(
         "/api/v1/found-people",
-        json={"full_name": "Get By Id Test", "source_hash": "get-by-id-unique"},
+        json={"full_name": "Get By Id Test v2", "source_hash": "get-by-id-v2"},
         headers={"X-Admin-Key": raw_key},
     )
     assert create_r.status_code == 201
@@ -162,7 +209,7 @@ async def test_update_status(client: AsyncClient, admin_key):
     raw_key, _ = admin_key
     create_r = await client.post(
         "/api/v1/found-people",
-        json={"full_name": "Status Update Test", "source_hash": "status-update-unique"},
+        json={"full_name": "Status Update Test v2", "source_hash": "status-update-v2"},
         headers={"X-Admin-Key": raw_key},
     )
     person_id = create_r.json()["id"]
@@ -186,14 +233,14 @@ async def test_admin_create_and_revoke_key(client: AsyncClient):
     master_key = settings.master_admin_key
     r = await client.post(
         "/api/v1/admin/api-keys",
-        json={"team_name": "new-test-team", "description": "Integration test key"},
+        json={"team_name": "new-test-team-v2", "description": "Integration test key"},
         headers={"X-Master-Key": master_key},
     )
     assert r.status_code == 201
     body = r.json()
     assert "key" in body
     assert body["key"].startswith("tvwr_")
-    assert body["team_name"] == "new-test-team"
+    assert body["team_name"] == "new-test-team-v2"
 
     key_id = body["id"]
     revoke_r = await client.delete(
@@ -202,11 +249,10 @@ async def test_admin_create_and_revoke_key(client: AsyncClient):
     )
     assert revoke_r.status_code == 200
 
-    revoked_key = body["key"]
     use_r = await client.post(
         "/api/v1/found-people/bulk",
         json={"people": [{"full_name": "Should Fail"}]},
-        headers={"X-Admin-Key": revoked_key},
+        headers={"X-Admin-Key": body["key"]},
     )
     assert use_r.status_code == 401
 

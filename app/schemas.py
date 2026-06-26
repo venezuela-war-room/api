@@ -6,14 +6,14 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+TIPOS_INSTALACION = {"hospital", "albergue", "morgue", "punto_concentracion", "centro_medico", "unknown"}
+
 
 def _clean_str(v: str) -> str:
     v = unicodedata.normalize("NFKC", v)
     v = re.sub(r"[\x00-\x1f\x7f]", "", v)
     return " ".join(v.split())
 
-
-# ── Shared validators ──────────────────────────────────────────────────────────
 
 CleanStr = Annotated[str, Field(min_length=1, max_length=500)]
 
@@ -33,10 +33,12 @@ class PersonCreate(_BaseClean):
     full_name: str = Field(min_length=2, max_length=200)
     document_id: str | None = Field(default=None, min_length=1, max_length=12)
     age: int | None = Field(default=None, ge=0, le=150)
-    hospital: str | None = Field(default=None, min_length=2, max_length=300)
-    servicio: str | None = Field(default=None, min_length=1, max_length=300)
+    ubicacion_actual: str | None = Field(default=None, min_length=2, max_length=300)
+    tipo_instalacion: str | None = Field(default=None)
+    ubicacion_detalles: str | None = Field(default=None, min_length=1, max_length=500)
     lugar_procedencia: str | None = Field(default=None, min_length=1, max_length=300)
     relevant_info: str | None = Field(default=None, max_length=5000)
+    fallecido: bool = False
     source_url: str | None = Field(default=None, max_length=2000)
     source_hash: str | None = Field(default=None, min_length=8, max_length=128)
     status: str = Field(default="verified")
@@ -52,6 +54,13 @@ class PersonCreate(_BaseClean):
             return digits
         return v
 
+    @field_validator("tipo_instalacion")
+    @classmethod
+    def validate_tipo(cls, v: str | None) -> str | None:
+        if v is not None and v not in TIPOS_INSTALACION:
+            raise ValueError(f"tipo_instalacion must be one of {sorted(TIPOS_INSTALACION)}")
+        return v
+
     @field_validator("status")
     @classmethod
     def validate_status(cls, v: str) -> str:
@@ -65,16 +74,21 @@ class PersonBulkCreate(BaseModel):
     people: list[PersonCreate] = Field(min_length=1, max_length=500)
 
 
-class HospitalInfo(BaseModel):
+# ── Response schemas ───────────────────────────────────────────────────────────
+
+class InstalacionInfo(BaseModel):
     id: uuid.UUID
-    name: str
+    tipo: str
+    nombre: str
+    direccion: str | None
 
     model_config = {"from_attributes": True}
 
 
-class ServicioInfo(BaseModel):
+class UbicacionInfo(BaseModel):
     id: uuid.UUID
-    name: str
+    instalacion: InstalacionInfo | None
+    detalles: str | None
 
     model_config = {"from_attributes": True}
 
@@ -92,10 +106,10 @@ class PersonResponse(BaseModel):
     full_name: str
     document_id: str | None
     age: int | None
-    hospital: HospitalInfo | None
-    servicio: ServicioInfo | None
+    ubicacion: UbicacionInfo | None
     lugar_procedencia: str | None
     relevant_info: str | None
+    fallecido: bool
     source_url: str | None
     status: str
     api_key: ApiKeyInfo | None
@@ -126,9 +140,11 @@ class DeleteBySourceUrl(BaseModel):
 class SearchParams(BaseModel):
     q: str | None = Field(default=None, min_length=2, max_length=100)
     name: str | None = Field(default=None, min_length=2, max_length=100)
-    document_id: str | None = Field(default=None, min_length=5, max_length=12)
-    hospital: str | None = Field(default=None, min_length=2, max_length=200)
+    document_id: str | None = Field(default=None, min_length=1, max_length=12)
+    ubicacion: str | None = Field(default=None, min_length=2, max_length=200)
+    tipo_instalacion: str | None = None
     procedencia: str | None = Field(default=None, min_length=2, max_length=200)
+    fallecido: bool | None = None
     status: str | None = None
     page: int = Field(default=1, ge=1, le=500)
     page_size: int = Field(default=10, ge=1, le=100)
@@ -137,7 +153,14 @@ class SearchParams(BaseModel):
     @classmethod
     def validate_document_id(cls, v: str | None) -> str | None:
         if v is not None:
-            return re.sub(r"\D", "", v)
+            return re.sub(r"\D", "", v) or None
+        return v
+
+    @field_validator("tipo_instalacion")
+    @classmethod
+    def validate_tipo(cls, v: str | None) -> str | None:
+        if v is not None and v not in TIPOS_INSTALACION:
+            raise ValueError(f"tipo_instalacion must be one of {sorted(TIPOS_INSTALACION)}")
         return v
 
 
@@ -147,8 +170,8 @@ class PaginatedResponse(BaseModel):
 
 
 class BulkUpsertResponse(BaseModel):
-    upserted: int
-    skipped: int
+    created: int
+    updated: int
     data: list[PersonResponse]
 
 

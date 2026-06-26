@@ -1,7 +1,6 @@
 import uuid
-from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
@@ -26,9 +25,11 @@ router = APIRouter(prefix="/api/v1/found-people", tags=["found-people"])
 async def search_people(
     q: str | None = Query(default=None, min_length=2, max_length=100),
     name: str | None = Query(default=None, min_length=2, max_length=100),
-    document_id: str | None = Query(default=None, min_length=5, max_length=12),
-    hospital: str | None = Query(default=None, min_length=2, max_length=200),
+    document_id: str | None = Query(default=None, min_length=1, max_length=12),
+    ubicacion: str | None = Query(default=None, min_length=2, max_length=200),
+    tipo_instalacion: str | None = Query(default=None),
     procedencia: str | None = Query(default=None, min_length=2, max_length=200),
+    fallecido: bool | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     page: int = Query(default=1, ge=1, le=500),
     page_size: int = Query(default=10, ge=1, le=100),
@@ -38,8 +39,10 @@ async def search_people(
         q=q,
         name=name,
         document_id=document_id,
-        hospital=hospital,
+        ubicacion=ubicacion,
+        tipo_instalacion=tipo_instalacion,
         procedencia=procedencia,
+        fallecido=fallecido,
         status=status_filter,
         page=page,
         page_size=page_size,
@@ -83,11 +86,11 @@ async def bulk_upsert(
         results.append((person, inserted))
     await db.commit()
 
-    upserted = sum(1 for _, ins in results if ins)
-    skipped = len(results) - upserted
+    created = sum(1 for _, ins in results if ins)
+    updated = len(results) - created
     return BulkUpsertResponse(
-        upserted=upserted,
-        skipped=skipped,
+        created=created,
+        updated=updated,
         data=[PersonResponse.model_validate(p) for p, _ in results],
     )
 
