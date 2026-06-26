@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: terremoto_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto
+      MASTER_ADMIN_KEY: ci-test-master-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Enable PostgreSQL extensions
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
+          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "pg_trgm";'
+          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "unaccent";'
+
+      - name: Run migrations on test DB
+        run: |
+          DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test \
+          uv run alembic upgrade head
+
+      - name: Run tests
+        run: |
+          DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test \
+          uv run pytest tests/ -v --asyncio-mode=auto
