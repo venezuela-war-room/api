@@ -31,7 +31,7 @@ class _BaseClean(BaseModel):
 
 class PersonCreate(_BaseClean):
     full_name: str = Field(min_length=2, max_length=200)
-    document_id: str | None = Field(default=None, min_length=5, max_length=12)
+    document_id: str | None = Field(default=None, min_length=1, max_length=12)
     age: int | None = Field(default=None, ge=0, le=150)
     hospital: str | None = Field(default=None, min_length=2, max_length=300)
     servicio: str | None = Field(default=None, min_length=1, max_length=300)
