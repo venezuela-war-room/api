@@ -117,6 +117,9 @@ async def _load_person(db: AsyncSession, person_id: uuid.UUID) -> FoundPerson:
             selectinload(FoundPerson.servicio),
             selectinload(FoundPerson.api_key),
         )
+        # upsert_person mutates the row via a Core ON CONFLICT DO UPDATE, which the
+        # ORM identity map can't see; force a refresh so we return post-upsert state.
+        .execution_options(populate_existing=True)
     )
     return result.scalar_one()
 

@@ -1,8 +1,11 @@
 import hashlib
+import os
 import uuid
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest_asyncio
+from dotenv import load_dotenv
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -11,7 +14,10 @@ from app.database import Base, get_db
 from app.main import app
 from app.models import ApiKey
 
-TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test"
+load_dotenv(Path(__file__).parent.parent / ".env")
+
+_base_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto")
+TEST_DB_URL = _base_url.rsplit("/", 1)[0] + "/terremoto_test"
 
 
 @pytest_asyncio.fixture(scope="session")

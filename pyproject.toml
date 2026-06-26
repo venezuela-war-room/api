@@ -7,6 +7,7 @@ dependencies = [
     "alembic>=1.18.5",
     "asyncpg>=0.31.0",
     "fastapi>=0.115",
+    "greenlet>=3.5.3",
     "pydantic>=2.0",
     "pydantic-settings>=2.14.2",
     "python-multipart>=0.0.32",
@@ -20,11 +21,13 @@ dev = [
     "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
+    "python-dotenv>=1.2.2",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 
 [tool.ruff.lint]
