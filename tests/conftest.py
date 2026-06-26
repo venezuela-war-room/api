@@ -1,9 +1,7 @@
-import asyncio
 import hashlib
 import uuid
 from collections.abc import AsyncGenerator
 
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
@@ -14,13 +12,6 @@ from app.main import app
 from app.models import ApiKey
 
 TEST_DB_URL = "postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test"
-
-
-@pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest_asyncio.fixture(scope="session")
