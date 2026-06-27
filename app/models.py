@@ -1,7 +1,15 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -20,6 +28,13 @@ class Instalacion(Base):
     nombre: Mapped[str] = mapped_column(String, nullable=False)
     normalized_nombre: Mapped[str] = mapped_column(String, nullable=False)
     direccion: Mapped[str | None] = mapped_column(String, nullable=True)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Canonical OSM identity ("{osm_type}/{osm_id}"); shared by name variants of the
+    # same real place. Partial-unique (one facility per OSM place).
+    osm_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    # NULL = still needs geocoding; stamped by the background worker once attempted.
+    geocoded_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())
 
     ubicaciones: Mapped[list["Ubicacion"]] = relationship(back_populates="instalacion")

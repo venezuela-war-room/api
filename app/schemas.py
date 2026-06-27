@@ -35,6 +35,12 @@ class PersonCreate(_BaseClean):
     age: int | None = Field(default=None, ge=0, le=150)
     ubicacion_actual: str | None = Field(default=None, min_length=2, max_length=300)
     tipo_instalacion: str | None = Field(default=None)
+    direccion: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=500,
+        description="Facility street address. If omitted, it is geocoded from the facility name via OpenStreetMap.",
+    )
     ubicacion_detalles: str | None = Field(default=None, min_length=1, max_length=500)
     lugar_procedencia: str | None = Field(default=None, min_length=1, max_length=300)
     relevant_info: str | None = Field(default=None, max_length=5000)
@@ -53,6 +59,7 @@ class PersonCreate(_BaseClean):
                     "age": 34,
                     "ubicacion_actual": "Hospital José Gregorio Hernández",
                     "tipo_instalacion": "hospital",
+                    "direccion": "Av. José Ángel Lamas, San Juan, Caracas",
                     "ubicacion_detalles": "Lista de pacientes, piso 3",
                     "lugar_procedencia": "La Guaira",
                     "relevant_info": "Politraumatismo, estable",
@@ -127,6 +134,8 @@ class InstalacionInfo(BaseModel):
     tipo: str
     nombre: str
     direccion: str | None
+    lat: float | None
+    lon: float | None
 
     model_config = {"from_attributes": True}
 

@@ -799,6 +799,7 @@ dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
     { name = "greenlet" },
+    { name = "httpx" },
     { name = "posthog" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -810,7 +811,6 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
-    { name = "httpx" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "python-dotenv" },
@@ -823,6 +823,7 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "greenlet", specifier = ">=3.5.3" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "posthog", specifier = ">=7.18.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
@@ -834,7 +835,6 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio", specifier = ">=4.14.1" },
-    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "python-dotenv", specifier = ">=1.2.2" },

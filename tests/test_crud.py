@@ -1,8 +1,31 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import crud
+from app.models import FoundPerson, Instalacion, Ubicacion
 from app.schemas import PersonCreate, SearchParams
+
+
+@pytest.mark.parametrize(
+    "variant",
+    [
+        "Hospital Domingo Luciani",
+        "HOSPITAL DOMINGO LUCIANI",
+        "Hospital Domingo Lucianí",
+        "Hosp. Domingo Luciani",
+        "Hospital Dr. Domingo Luciani",
+        "Hospital Domingo Luciani (El Llanito)",
+        "Hospital de Domingo Luciani",
+    ],
+)
+def test_normalize_facility_collapses_variants(variant):
+    assert crud._normalize_facility(variant) == crud._normalize_facility("Hospital Domingo Luciani")
+
+
+def test_normalize_facility_keeps_distinct_places():
+    # The facility-type word is preserved, so these stay different keys.
+    assert crud._normalize_facility("Hospital Vargas") != crud._normalize_facility("Clínica Vargas")
 
 
 @pytest.mark.asyncio
@@ -17,6 +40,25 @@ async def test_find_or_create_instalacion_same_nombre_different_tipo(db: AsyncSe
     i1 = await crud.find_or_create_instalacion(db, "hospital", "Centro Vargas")
     i2 = await crud.find_or_create_instalacion(db, "centro_medico", "Centro Vargas")
     assert i1.id != i2.id
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_instalacion_pending_when_no_direccion(db: AsyncSession):
+    inst = await crud.find_or_create_instalacion(db, "hospital", "Hosp. Sin Direccion CRUD")
+    # No address → left in the geocoding queue for the background worker.
+    assert inst.direccion is None
+    assert inst.geocoded_at is None
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_instalacion_done_when_direccion_supplied(db: AsyncSession):
+    inst = await crud.find_or_create_instalacion(
+        db, "hospital", "Hosp. Con Direccion CRUD", direccion="Av. Principal, Caracas"
+    )
+    await db.refresh(inst)
+    # Client supplied the address → marked done so the worker skips it.
+    assert inst.direccion == "Av. Principal, Caracas"
+    assert inst.geocoded_at is not None
 
 
 @pytest.mark.asyncio
@@ -177,3 +219,49 @@ async def test_soft_delete(db: AsyncSession):
     params = SearchParams(name="Delete Test Person")
     results, _ = await crud.search_people(db, params)
     assert all(p.status != "removed" for p in results)
+
+
+@pytest.mark.asyncio
+async def test_merge_instalacion_reassigns_and_merges_wards(db: AsyncSession):
+    source = await crud.find_or_create_instalacion(db, "hospital", "Merge Source Hosp")
+    target = await crud.find_or_create_instalacion(db, "hospital", "Merge Target Hosp")
+
+    src_only = await crud.find_or_create_ubicacion(db, source.id, "Sala Unica Source")
+    src_shared = await crud.find_or_create_ubicacion(db, source.id, "Sala Compartida")
+    tgt_shared = await crud.find_or_create_ubicacion(db, target.id, "Sala Compartida")
+
+    p_only = FoundPerson(full_name="Person Only", source_hash="merge-only-v1", ubicacion_id=src_only.id)
+    p_shared = FoundPerson(full_name="Person Shared", source_hash="merge-shared-v1", ubicacion_id=src_shared.id)
+    db.add_all([p_only, p_shared])
+    await db.flush()
+
+    await crud.merge_instalacion(db, source, target)
+    await db.commit()
+
+    # Source facility is gone.
+    assert (await db.execute(select(Instalacion).where(Instalacion.id == source.id))).scalar_one_or_none() is None
+
+    # The source-only ward was repointed to the target; its person travels with it.
+    moved = (await db.execute(select(Ubicacion).where(Ubicacion.id == src_only.id))).scalar_one()
+    assert moved.instalacion_id == target.id
+    assert (await db.execute(select(FoundPerson).where(FoundPerson.id == p_only.id))).scalar_one().ubicacion_id == src_only.id
+
+    # The colliding "Sala Compartida" ward was merged: source ward deleted, person repointed.
+    assert (await db.execute(select(Ubicacion).where(Ubicacion.id == src_shared.id))).scalar_one_or_none() is None
+    assert (await db.execute(select(FoundPerson).where(FoundPerson.id == p_shared.id))).scalar_one().ubicacion_id == tgt_shared.id
+
+
+@pytest.mark.asyncio
+async def test_merge_instalacion_backfills_missing_fields(db: AsyncSession):
+    source = await crud.find_or_create_instalacion(db, "hospital", "Backfill Source Hosp", direccion="Calle 1")
+    source.lat, source.lon, source.osm_id = 10.5, -66.9, "way/999"
+    target = await crud.find_or_create_instalacion(db, "hospital", "Backfill Target Hosp")
+    await db.flush()
+
+    await crud.merge_instalacion(db, source, target)
+    await db.commit()
+
+    await db.refresh(target)
+    assert target.direccion == "Calle 1"
+    assert target.lat == 10.5
+    assert target.osm_id == "way/999"

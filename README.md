@@ -35,13 +35,16 @@ Multiple organizations and volunteers are transcribing hospital lists, OCR-proce
 ## Database Schema
 
 ```
-hospitals         — deduplicated healthcare facilities
-servicios         — wards/sections within a hospital
+instalaciones     — deduplicated facilities (hospitals, shelters, morgues, …) + address/coords
+ubicaciones       — a specific location within or without a facility (ward, floor, ad-hoc address)
 api_keys          — per-team ingestion credentials
-found_people      — the main registry (FK to hospitals, servicios, api_keys)
+found_people      — the main registry (FK to ubicaciones, api_keys)
 ```
 
 Every `found_people` record carries an `api_key_id` so you always know which team submitted it.
+
+Facility addresses (`direccion`, `lat`, `lon` on `instalaciones`) are filled asynchronously by a
+background geocoding worker — see the [ETL / data-flow diagram](docs/etl-diagram.md).
 
 See the full [ER diagram](docs/er-diagram.md) for column details, relationships, and indexes.
 
@@ -187,6 +190,30 @@ uv run python scripts/import_csv.py consolidado.csv \
   --api-url http://localhost:8000
 ```
 
+### Seed test data
+
+For a small, predictable dataset (5 hospitals + ward locations + 5 sample people)
+to develop or test against, run the seed script. It talks to the database directly,
+so point `DATABASE_URL` at your target — for the docker compose Postgres:
+
+```bash
+DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
+  uv run python scripts/seed_test_data.py
+```
+
+The script is **idempotent** (`ON CONFLICT (id) DO NOTHING`), so re-running it is
+safe and reports how many rows were newly inserted. Pass `--reset` to delete the
+seeded rows first (scoped to their known ids, child → parent order) for a clean
+wipe-and-reseed:
+
+```bash
+DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
+  uv run python scripts/seed_test_data.py --reset
+```
+
+> The seeded `api_key` is a placeholder — its hash matches no real key, so it only
+> satisfies the `found_people` foreign key. It will not authenticate API requests.
+
 ---
 
 ## Environment Variables
@@ -197,6 +224,14 @@ uv run python scripts/import_csv.py consolidado.csv \
 | `MASTER_ADMIN_KEY` | Secret for managing API keys | `change-me-in-production` |
 | `CORS_ORIGINS` | JSON list of allowed origins | `["*"]` |
 | `DEBUG` | Enable SQLAlchemy query logging | `false` |
+| `GEOCODING_ENABLED` | Master switch for OpenStreetMap address lookup | `true` |
+| `GEOCODING_WORKER_ENABLED` | Run the in-app background geocoding worker | `true` |
+| `GEOCODING_WORKER_INTERVAL` | Idle seconds between worker cycles when nothing is pending | `60` |
+| `GEOCODING_BATCH_SIZE` | Facilities geocoded per worker cycle | `10` |
+| `GEOCODING_CONCURRENCY` | Parallel Nominatim requests (raise only for self-hosted) | `1` |
+| `GEOCODING_REQUEST_DELAY` | Seconds between Nominatim calls (politeness) | `1.0` |
+| `NOMINATIM_BASE_URL` | Geocoding endpoint | public OSM Nominatim |
+| `NOMINATIM_USER_AGENT` | Identifying User-Agent (required by Nominatim policy) | project default |
 
 ---
 
@@ -238,18 +273,30 @@ app/
   schemas.py      Pydantic v2 request/response schemas
   auth.py         API key and master key authentication dependencies
   crud.py         Database operations (search, upsert, find-or-create)
+  geocoding.py    OpenStreetMap Nominatim client (pure HTTP)
+  geocoding_worker.py  Background worker that fills facility addresses
   routers/
     health.py     GET /health
     people.py     /api/v1/found-people routes
     admin.py      /api/v1/admin/api-keys routes
 migrations/
-  versions/001_initial.py   Initial schema + extensions
+  versions/001_initial.py            Initial schema + extensions
+  versions/002_instalacion_coords.py lat/lon + geocoding queue (geocoded_at)
 scripts/
-  import_csv.py   One-shot CSV importer
+  import_csv.py            One-shot CSV importer
+  seed_test_data.py        Seed a small fixed test dataset (--reset to wipe + reseed)
+  backfill_addresses.py    Drain the geocoding queue on demand
+  dedup_facilities.py      Merge duplicate facilities by canonical name
+docs/
+  er-diagram.md   Entity-relationship diagram
+  etl-diagram.md  Ingestion + geocoding data-flow diagram
 tests/
-  test_schemas.py  Pydantic unit tests
-  test_crud.py     DB integration tests
-  test_api.py      Full HTTP tests
+  test_schemas.py          Pydantic unit tests
+  test_crud.py             DB integration tests
+  test_api.py              Full HTTP tests
+  test_geocoding.py        Nominatim client unit tests
+  test_geocoding_worker.py Worker queue/outcome tests
+  test_docs.py             OpenAPI/Swagger surface tests
 ```
 
 ---

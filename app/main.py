@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,7 +8,11 @@ from fastapi.responses import RedirectResponse
 
 from app.analytics import analytics_middleware, capture_event, shutdown_analytics
 from app.config import settings
+from app.geocoding_worker import run_worker
+from app.logging_config import configure_logging
 from app.routers import admin, health, people
+
+configure_logging()
 
 API_DESCRIPTION = """
 Shared search layer for tracking people found, hospitalized, or sheltered after the
@@ -52,10 +58,18 @@ TAGS_METADATA = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Run the geocoding backfill worker alongside the app (gated by settings).
+    worker_task: asyncio.Task | None = None
+    if settings.geocoding_worker_enabled and settings.geocoding_enabled:
+        worker_task = asyncio.create_task(run_worker())
     capture_event("server_started")
     try:
         yield
     finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
         await shutdown_analytics()
 
 
