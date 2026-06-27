@@ -6,8 +6,38 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Compile Python modules
+        run: uv run python -m compileall app migrations tests
+
   test:
+    name: test
     runs-on: ubuntu-latest
 
     services:
@@ -26,8 +56,10 @@ jobs:
           --health-retries 10
 
     env:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test
       MASTER_ADMIN_KEY: ci-test-master-key
+      ENVIRONMENT: test
+      POSTHOG_API_KEY: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -36,25 +68,77 @@ jobs:
         uses: astral-sh/setup-uv@v4
         with:
           version: "latest"
+          enable-cache: true
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --all-groups
-
-      - name: Enable PostgreSQL extensions
-        run: |
-          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "pgcrypto";'
-          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "pg_trgm";'
-          PGPASSWORD=postgres psql -h localhost -U postgres -d terremoto_test -c 'CREATE EXTENSION IF NOT EXISTS "unaccent";'
+        run: uv sync --all-groups --frozen
 
       - name: Run migrations on test DB
-        run: |
-          DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test \
-          uv run alembic upgrade head
+        run: uv run alembic upgrade head
 
       - name: Run tests
+        run: uv run pytest tests/ -v --asyncio-mode=auto
+
+  migration-integrity:
+    name: migration-integrity
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: terremoto_migration_check
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_migration_check
+      MASTER_ADMIN_KEY: ci-test-master-key
+      ENVIRONMENT: test
+      POSTHOG_API_KEY: ""
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+
+      - name: Apply migrations from scratch
+        run: uv run alembic upgrade head
+
+      - name: Verify current migration head
+        run: uv run alembic current --verbose
+
+      - name: Verify migrations are reversible
         run: |
-          DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto_test \
-          uv run pytest tests/ -v --asyncio-mode=auto
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+
+  docker-build:
+    name: docker-build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build --pull --tag terremoto-venezuela-war-room-api:ci .
