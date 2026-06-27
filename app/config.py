@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,6 +9,18 @@ class Settings(BaseSettings):
     master_admin_key: str = "change-me-in-production"
     cors_origins: list[str] = ["*"]
     debug: bool = False
+
+    @field_validator("database_url")
+    @classmethod
+    def force_asyncpg_driver(cls, v: str) -> str:
+        # Managed Postgres providers hand out bare `postgres://` / `postgresql://`
+        # URLs. SQLAlchemy's async engine needs the asyncpg driver explicitly, or
+        # it falls back to psycopg2 (not installed) and import fails at startup.
+        if v.startswith("postgres://"):
+            return "postgresql+asyncpg://" + v[len("postgres://"):]
+        if v.startswith("postgresql://"):
+            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+        return v
 
 
 settings = Settings()
