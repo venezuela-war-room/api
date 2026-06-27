@@ -223,6 +223,50 @@ async def test_update_status(client: AsyncClient, admin_key):
 
 
 @pytest.mark.asyncio
+async def test_create_persists_client_supplied_direccion(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    r = await client.post(
+        "/api/v1/found-people",
+        json={
+            "full_name": "Direccion Supplied Test",
+            "ubicacion_actual": "Hosp. Direccion Cliente",
+            "tipo_instalacion": "hospital",
+            "direccion": "Av. Principal 123, Caracas",
+            "source_hash": "direccion-supplied-v1",
+        },
+        headers={"X-Admin-Key": raw_key},
+    )
+    assert r.status_code == 201
+    instalacion = r.json()["ubicacion"]["instalacion"]
+    assert instalacion["direccion"] == "Av. Principal 123, Caracas"
+    # Client supplied the address, so the worker never geocodes it → no coordinates,
+    # and the facility is not left pending.
+    assert instalacion["lat"] is None
+    assert instalacion["lon"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_without_direccion_leaves_facility_pending(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    r = await client.post(
+        "/api/v1/found-people",
+        json={
+            "full_name": "Pending Geocode Test",
+            "ubicacion_actual": "Hosp. Pendiente Geocode",
+            "tipo_instalacion": "hospital",
+            "source_hash": "pending-geocode-v1",
+        },
+        headers={"X-Admin-Key": raw_key},
+    )
+    assert r.status_code == 201
+    instalacion = r.json()["ubicacion"]["instalacion"]
+    # No inline geocoding: address/coords stay empty until the background worker runs.
+    assert instalacion["direccion"] is None
+    assert instalacion["lat"] is None
+    assert instalacion["lon"] is None
+
+
+@pytest.mark.asyncio
 async def test_admin_create_key_no_master(client: AsyncClient):
     r = await client.post("/api/v1/admin/api-keys", json={"team_name": "test-team"})
     assert r.status_code == 401

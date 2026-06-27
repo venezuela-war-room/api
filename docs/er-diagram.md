@@ -8,7 +8,10 @@ erDiagram
         VARCHAR     tipo                    "hospital | albergue | morgue | punto_concentracion | centro_medico"
         VARCHAR     nombre                  "display name"
         VARCHAR     normalized_nombre       "lowercase + unaccent, dedup key"
-        VARCHAR     direccion               "optional address"
+        VARCHAR     direccion               "address — client-supplied or geocoded"
+        FLOAT       lat                     "latitude (from OpenStreetMap)"
+        FLOAT       lon                     "longitude (from OpenStreetMap)"
+        TIMESTAMPTZ geocoded_at             "NULL = pending geocoding; set once attempted"
         TIMESTAMPTZ created_at              "auto"
     }
 
@@ -109,4 +112,13 @@ found_people.ubicacion_id
 | `found_people` | `fallecido` | B-tree | Deceased filter |
 | `found_people` | `full_name` (GIN trgm) | GIN | Fuzzy name search via `pg_trgm` |
 | `instalaciones` | `(tipo, normalized_nombre)` | Unique | Facility dedup per type |
+| `instalaciones` | `created_at` WHERE `geocoded_at IS NULL` | Partial B-tree | Geocoding worker's pending-queue scan |
 | `ubicaciones` | `(instalacion_id, normalized_detalles)` | Unique | Location dedup per facility+ward |
+
+## Geocoding
+
+`direccion`, `lat`, and `lon` on `instalaciones` are filled by a background worker (see the
+[ETL diagram](etl-diagram.md)). `geocoded_at` is the queue marker: `NULL` means the facility
+still needs an address; the worker claims those rows (`FOR UPDATE SKIP LOCKED`), calls
+OpenStreetMap Nominatim, and stamps `geocoded_at`. A client-supplied `direccion` is stored on
+ingestion and pre-marks the row done.

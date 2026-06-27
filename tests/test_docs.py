@@ -49,6 +49,16 @@ async def test_tags_metadata_present(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_address_fields_documented_in_schema(client: AsyncClient):
+    schemas = (await client.get("/openapi.json")).json()["components"]["schemas"]
+    assert "direccion" in schemas["PersonCreate"]["properties"]
+    instalacion_props = schemas["InstalacionInfo"]["properties"]
+    assert "direccion" in instalacion_props
+    assert "lat" in instalacion_props
+    assert "lon" in instalacion_props
+
+
+@pytest.mark.asyncio
 async def test_write_endpoint_requires_admin_key_in_schema(client: AsyncClient):
     schema = (await client.get("/openapi.json")).json()
     post_op = schema["paths"]["/api/v1/found-people"]["post"]

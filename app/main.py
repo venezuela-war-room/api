@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -5,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.config import settings
+from app.geocoding_worker import run_worker
 from app.routers import admin, health, people
 
 API_DESCRIPTION = """
@@ -51,7 +54,17 @@ TAGS_METADATA = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    # Run the geocoding backfill worker alongside the app (gated by settings).
+    worker_task: asyncio.Task | None = None
+    if settings.geocoding_worker_enabled and settings.geocoding_enabled:
+        worker_task = asyncio.create_task(run_worker())
+    try:
+        yield
+    finally:
+        if worker_task is not None:
+            worker_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await worker_task
 
 
 app = FastAPI(

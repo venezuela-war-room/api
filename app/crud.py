@@ -23,15 +23,33 @@ def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str
     return hashlib.sha256(parts.encode()).hexdigest()
 
 
-async def find_or_create_instalacion(db: AsyncSession, tipo: str, nombre: str) -> Instalacion:
+async def find_or_create_instalacion(
+    db: AsyncSession,
+    tipo: str,
+    nombre: str,
+    direccion: str | None = None,
+) -> Instalacion:
     norm = _normalize(nombre)
     result = await db.execute(
         select(Instalacion).where(Instalacion.tipo == tipo, Instalacion.normalized_nombre == norm)
     )
     instalacion = result.scalar_one_or_none()
     if not instalacion:
-        instalacion = Instalacion(tipo=tipo, nombre=nombre, normalized_nombre=norm)
+        # A client-supplied address means we never need to geocode → mark it done.
+        # Otherwise leave geocoded_at NULL so the background worker picks it up.
+        instalacion = Instalacion(
+            tipo=tipo,
+            nombre=nombre,
+            normalized_nombre=norm,
+            direccion=direccion,
+            geocoded_at=func.now() if direccion else None,
+        )
         db.add(instalacion)
+        await db.flush()
+    elif instalacion.direccion is None and direccion is not None:
+        # Backfill an existing facility that was first created without an address.
+        instalacion.direccion = direccion
+        instalacion.geocoded_at = func.now()
         await db.flush()
     return instalacion
 
@@ -76,7 +94,11 @@ async def upsert_person(
 
     if payload.ubicacion_actual:
         tipo = payload.tipo_instalacion or "unknown"
-        instalacion = await find_or_create_instalacion(db, tipo, payload.ubicacion_actual)
+        # Store any client-supplied address; coordinates are filled later by the
+        # background geocoding worker (app/geocoding_worker.py).
+        instalacion = await find_or_create_instalacion(
+            db, tipo, payload.ubicacion_actual, direccion=payload.direccion
+        )
         ubicacion = await find_or_create_ubicacion(db, instalacion.id, payload.ubicacion_detalles)
         ubicacion_id = ubicacion.id
     elif payload.ubicacion_detalles:

@@ -39,6 +39,17 @@ Every record has a `source_hash` (SHA-256). Upserts use `ON CONFLICT (source_has
 ### Facility normalization
 Before inserting a `found_people` row, `crud.find_or_create_hospital` and `crud.find_or_create_servicio` normalize the name (NFKD → strip combining chars → lowercase) and do a SELECT before INSERT. This keeps hospitals and servicios deduplicated across teams.
 
+### Facility address geocoding (OpenStreetMap) — background worker
+`instalaciones` rows carry `direccion`, `lat`, `lon`, and `geocoded_at`. **Geocoding is off the request path** — ingestion never calls OpenStreetMap. See the data-flow in `docs/etl-diagram.md`.
+
+- **Queue marker:** `geocoded_at IS NULL` ⟺ "needs geocoding", backed by the partial index `ix_instalaciones_pending_geocode`. On ingestion, `crud.find_or_create_instalacion` stores a client-supplied `direccion` (and sets `geocoded_at = now()`); with no address it leaves `geocoded_at` NULL so the worker picks it up.
+- **Worker:** `app/geocoding_worker.py` `run_worker()` is started in the `app/main.py` lifespan (gated by `geocoding_worker_enabled` + `geocoding_enabled`). Each cycle `claim_pending` selects `WHERE geocoded_at IS NULL ... FOR UPDATE SKIP LOCKED` (multi-process safe), `geocode_batch`es the names, and writes results.
+- **Outcomes** (`GeocodeOutcome`): matched → write `direccion`/`lat`/`lon` + stamp `geocoded_at`; no-match (HTTP 200 empty) → stamp `geocoded_at` only (stop retrying); transient (timeout/5xx) → leave `geocoded_at` NULL (retried next cycle).
+- `app/geocoding.py` is a **pure HTTP client** (no DB). `app/geocoding_worker.py` owns the DB/queue logic. `crud.py` stays DB-only; routers do a plain upsert (no network).
+- ⚠️ The **public** Nominatim endpoint forbids parallel requests (~1 req/sec, identifying `User-Agent` required). `geocoding_concurrency` defaults to `1` and `geocoding_request_delay` to `1.0s`; raise concurrency only against a self-hosted/commercial instance via `NOMINATIM_BASE_URL`.
+- **Manual drain:** `uv run python scripts/backfill_addresses.py [--limit N] [--dry-run]` runs the same `process_pending_batch` (e.g. without the web app, or when the worker is disabled).
+- Tests stay offline: an autouse fixture in `conftest.py` sets `geocoding_enabled = False` (and the worker isn't started — httpx `ASGITransport` skips lifespan); tests that exercise geocoding monkeypatch `geocode_one`/`geocode_batch` or `app.geocoding_worker.geocode_batch`.
+
 ### Auth
 - `X-Admin-Key`: any active row in `api_keys` (matched by SHA-256 hash). The resolved `ApiKey` object is attached to `request.state.api_key` and its `id` is written to `found_people.api_key_id`.
 - `X-Master-Key`: compared directly to `settings.master_admin_key` (env var). Only used for key lifecycle routes.
@@ -66,6 +77,16 @@ Test database: `terremoto_test`. Set `DATABASE_URL` env var to point at it when 
 | `MASTER_ADMIN_KEY` | Long random secret — required in production |
 | `CORS_ORIGINS` | JSON list, e.g. `["https://myapp.com"]` |
 | `DEBUG` | Set `true` to echo SQL queries |
+| `GEOCODING_ENABLED` | `true`/`false` — master switch for OpenStreetMap address lookup (default `true`) |
+| `GEOCODING_WORKER_ENABLED` | Run the in-app background geocoding worker (default `true`) |
+| `GEOCODING_WORKER_INTERVAL` | Idle seconds between worker cycles when nothing is pending (default `60`) |
+| `GEOCODING_BATCH_SIZE` | Facilities geocoded per worker cycle (default `10`) |
+| `NOMINATIM_BASE_URL` | Geocoding endpoint (default public OSM Nominatim) |
+| `NOMINATIM_USER_AGENT` | Identifying UA string — **required** by Nominatim policy |
+| `GEOCODING_TIMEOUT` | Per-request timeout seconds (default `5.0`) |
+| `GEOCODING_CONCURRENCY` | Parallel geocode requests (default `1`; raise only for self-hosted Nominatim) |
+| `GEOCODING_REQUEST_DELAY` | Seconds between Nominatim calls (default `1.0`) |
+| `GEOCODING_COUNTRY_CODES` | Bias results by country (default `ve`) |
 
 ## API documentation (Swagger / OpenAPI)
 

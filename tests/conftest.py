@@ -4,17 +4,28 @@ import uuid
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 from dotenv import load_dotenv
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.config import settings
 from app.database import Base, get_db
 from app.main import app
 from app.models import ApiKey
 
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+
+@pytest.fixture(autouse=True)
+def _disable_geocoding():
+    """Keep the suite offline: no test hits OpenStreetMap unless it opts in."""
+    original = settings.geocoding_enabled
+    settings.geocoding_enabled = False
+    yield
+    settings.geocoding_enabled = original
 
 _base_url = os.environ.get("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto")
 _server_url, _ = _base_url.rsplit("/", 1)

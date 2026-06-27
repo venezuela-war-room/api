@@ -20,6 +20,25 @@ async def test_find_or_create_instalacion_same_nombre_different_tipo(db: AsyncSe
 
 
 @pytest.mark.asyncio
+async def test_find_or_create_instalacion_pending_when_no_direccion(db: AsyncSession):
+    inst = await crud.find_or_create_instalacion(db, "hospital", "Hosp. Sin Direccion CRUD")
+    # No address → left in the geocoding queue for the background worker.
+    assert inst.direccion is None
+    assert inst.geocoded_at is None
+
+
+@pytest.mark.asyncio
+async def test_find_or_create_instalacion_done_when_direccion_supplied(db: AsyncSession):
+    inst = await crud.find_or_create_instalacion(
+        db, "hospital", "Hosp. Con Direccion CRUD", direccion="Av. Principal, Caracas"
+    )
+    await db.refresh(inst)
+    # Client supplied the address → marked done so the worker skips it.
+    assert inst.direccion == "Av. Principal, Caracas"
+    assert inst.geocoded_at is not None
+
+
+@pytest.mark.asyncio
 async def test_find_or_create_ubicacion_dedup(db: AsyncSession):
     instalacion = await crud.find_or_create_instalacion(db, "hospital", "Hospital de Prueba CRUD")
     u1 = await crud.find_or_create_ubicacion(db, instalacion.id, "Emergencias")

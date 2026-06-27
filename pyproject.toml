@@ -8,6 +8,7 @@ dependencies = [
     "asyncpg>=0.31.0",
     "fastapi>=0.115",
     "greenlet>=3.5.3",
+    "httpx>=0.28.1",
     "pydantic>=2.0",
     "pydantic-settings>=2.14.2",
     "python-multipart>=0.0.32",
@@ -18,7 +19,6 @@ dependencies = [
 [dependency-groups]
 dev = [
     "anyio>=4.14.1",
-    "httpx>=0.28.1",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "python-dotenv>=1.2.2",
