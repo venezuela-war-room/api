@@ -10,23 +10,26 @@ from app.config import settings
 APP_NAME = "terremoto-venezuela-war-room-api"
 SYSTEM_DISTINCT_ID = "terremoto_venezuela_war_room_api"
 
-if settings.posthog_api_key:
-    posthog.project_api_key = settings.posthog_api_key
-    posthog.host = settings.posthog_host
-    posthog.disabled = False
-else:
-    posthog.disabled = True
+_client = (
+    posthog.Posthog(
+        settings.posthog_api_key,
+        host=settings.posthog_host,
+        disabled=False,
+    )
+    if settings.posthog_api_key
+    else None
+)
 
 
 def analytics_enabled() -> bool:
-    return bool(settings.posthog_api_key)
+    return _client is not None
 
 
 def capture_event(event: str, properties: dict[str, Any] | None = None) -> None:
-    if not analytics_enabled():
+    if not _client:
         return
 
-    posthog.capture(
+    _client.capture(
         event,
         distinct_id=SYSTEM_DISTINCT_ID,
         properties={
@@ -68,5 +71,5 @@ async def analytics_middleware(
 
 
 async def shutdown_analytics() -> None:
-    if analytics_enabled():
-        posthog.shutdown()
+    if _client:
+        _client.shutdown()
