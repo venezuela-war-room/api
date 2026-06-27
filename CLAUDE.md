@@ -36,6 +36,11 @@ tests/            conftest.py sets up a test DB session; fixtures share session-
 ### Deduplication
 Every record has a `source_hash` (SHA-256). Upserts use `ON CONFLICT (source_hash) DO UPDATE`. If the caller doesn't provide `source_hash`, `crud.py` generates it from `sha256(full_name|document_id|hospital)`.
 
+### Facility vs. free-text — only real places become `instalaciones`
+`ubicacion_actual` is only turned into a facility when `crud._looks_like_facility` says it names a real, geocodeable place (facility keyword like *hospital/albergue/cdi*, or a short keyword-less name like "Pérez Carreño"). Sentence-like free text (`"Está en el área de pediatría del Pérez carreño"`) is routed instead into a `ubicacion` with `instalacion_id = NULL`, folded into `detalles` via `crud._combine_detalles` — kept as location info, never geocoded. Two layers enforce this:
+1. **Ingestion gate** (`_looks_like_facility`): deterministic keyword/prose heuristic in `upsert_person`. Junk never enters the facilities table or the geocode queue.
+2. **Geocode confirmation** (backstop): if a facility that slipped past the gate gets a definitive OSM **no-match** AND has no facility keyword, the worker calls `crud.demote_instalacion_to_detalle` (folds the name into `detalles`, repoints people, deletes the facility). A named "Hospital …" with no OSM match is **kept** as an unconfirmed facility (`osm_id` NULL) — OSM gaps must not destroy real places.
+
 ### Facility dedup — one real place = one `instalaciones` row
 Two complementary layers keep a facility like "Hospital Domingo Luciani" from fanning out across teams:
 
@@ -147,13 +152,15 @@ Pydantic schemas, so keeping them rich is part of writing each endpoint.
 
 | CSV column (ecrespo OCR) | API field |
 |---|---|
-| `Hospital / Área` | `hospital` |
+| `Hospital / Área` | `ubicacion_actual` |
 | `Nombre` | `full_name` |
 | `Edad` | `age` |
 | `Cédula` | `document_id` |
 | `Procedencia / Zona` | `lugar_procedencia` |
-| `Servicio / Lista` | `servicio` |
+| `Servicio / Lista` | `ubicacion_detalles` |
 | `Nota` | `relevant_info` |
+
+`scripts/import_csv.py` does **not** set `tipo_instalacion` — the `"Hospital / Área"` column mixes real facility names with free-text descriptions, so the API's `_looks_like_facility` gate (not a blanket `hospital` tag) decides whether each value becomes a facility or a `ubicacion` detail.
 
 | Bot field (edwinvrgs) | API field |
 |---|---|

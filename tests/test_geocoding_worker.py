@@ -2,10 +2,10 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import geocoding, geocoding_worker
+from app import crud, geocoding, geocoding_worker
 from app.config import settings
 from app.geocoding import GeocodeOutcome, GeocodeResult
-from app.models import Instalacion
+from app.models import FoundPerson, Instalacion, Ubicacion
 
 
 async def _seed(db: AsyncSession, nombre: str) -> Instalacion:
@@ -134,3 +134,48 @@ async def test_worker_keeps_distinct_osm_ids_separate(db: AsyncSession, monkeypa
         await db.execute(select(Instalacion).where(Instalacion.id.in_([a.id, b.id])))
     ).scalars().all()
     assert len(remaining) == 2  # different places stay separate
+
+
+@pytest.mark.asyncio
+async def test_worker_demotes_keywordless_no_match(db: AsyncSession, monkeypatch):
+    monkeypatch.setattr(settings, "geocoding_batch_size", 10_000)
+    # Keyword-less name that slipped past the ingest gate (short, no prose at insert time).
+    inst = Instalacion(tipo="unknown", nombre="Algun Lugar Raro WK", normalized_nombre="algun lugar raro wk")
+    db.add(inst)
+    await db.flush()
+    ward = await crud.find_or_create_ubicacion(db, inst.id, "Detalle WK")
+    person = FoundPerson(full_name="Demote WK Person", source_hash="demote-wk-person", ubicacion_id=ward.id)
+    db.add(person)
+    await db.commit()
+    inst_id = inst.id
+
+    async def fake_geocode_batch(names):
+        return {n: geocoding.NO_MATCH for n in names}
+
+    monkeypatch.setattr(geocoding_worker, "geocode_batch", fake_geocode_batch)
+    await geocoding_worker.process_pending_batch(db)
+
+    # Facility demoted away; the person's ubicacion lost its facility, name folded in.
+    assert (await db.execute(select(Instalacion).where(Instalacion.id == inst_id))).scalar_one_or_none() is None
+    moved = (await db.execute(select(Ubicacion).where(Ubicacion.id == ward.id))).scalar_one()
+    assert moved.instalacion_id is None
+    assert "Algun Lugar Raro WK" in moved.detalles
+
+
+@pytest.mark.asyncio
+async def test_worker_keeps_named_facility_on_no_match(db: AsyncSession, monkeypatch):
+    monkeypatch.setattr(settings, "geocoding_batch_size", 10_000)
+    inst = await _seed(db, "Hospital Rural Sin OSM WK")
+    await db.commit()
+    inst_id = inst.id
+
+    async def fake_geocode_batch(names):
+        return {n: geocoding.NO_MATCH for n in names}
+
+    monkeypatch.setattr(geocoding_worker, "geocode_batch", fake_geocode_batch)
+    await geocoding_worker.process_pending_batch(db)
+
+    # A named "Hospital …" with no OSM match is kept as an unconfirmed facility.
+    kept = (await db.execute(select(Instalacion).where(Instalacion.id == inst_id))).scalar_one()
+    assert kept.osm_id is None
+    assert kept.geocoded_at is not None
