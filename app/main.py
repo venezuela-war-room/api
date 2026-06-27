@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
+from app.analytics import analytics_middleware, capture_event, shutdown_analytics
 from app.config import settings
 from app.geocoding_worker import run_worker
 from app.logging_config import configure_logging
@@ -61,6 +62,7 @@ async def lifespan(app: FastAPI):
     worker_task: asyncio.Task | None = None
     if settings.geocoding_worker_enabled and settings.geocoding_enabled:
         worker_task = asyncio.create_task(run_worker())
+    capture_event("server_started")
     try:
         yield
     finally:
@@ -68,6 +70,7 @@ async def lifespan(app: FastAPI):
             worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await worker_task
+        await shutdown_analytics()
 
 
 app = FastAPI(
@@ -80,6 +83,8 @@ app = FastAPI(
     license_info={"name": "MIT"},
     swagger_ui_parameters={"persistAuthorization": True, "displayRequestDuration": True},
 )
+
+app.middleware("http")(analytics_middleware)
 
 app.add_middleware(
     CORSMiddleware,

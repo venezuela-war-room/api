@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     master_admin_key: str = "change-me-in-production"
     cors_origins: list[str] = ["*"]
     debug: bool = False
+
     log_level: str = "INFO"
 
     # ── Geocoding (OpenStreetMap Nominatim) ──────────────────────────────────
@@ -28,6 +29,12 @@ class Settings(BaseSettings):
     geocoding_worker_enabled: bool = True
     geocoding_worker_interval: float = 60.0  # idle sleep when no facilities are pending
     geocoding_batch_size: int = 10  # facilities claimed per cycle
+
+    # posthog
+    environment: str = "production"
+    posthog_api_key: str | None = None
+    posthog_host: str = "https://us.i.posthog.com"
+
 
     @field_validator("database_url")
     @classmethod
