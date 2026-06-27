@@ -1,79 +1,96 @@
-# Terremoto API
+# Venezuela War Room API
 
-REST API for searching and managing records of people found or hospitalized after the **Venezuela earthquake of June 24, 2026**. Built to consolidate data from multiple volunteer teams into a single queryable source of truth.
+[![CI](https://github.com/venezuela-war-room/api/actions/workflows/ci.yml/badge.svg)](https://github.com/venezuela-war-room/api/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Overview
+REST API for searching, ingesting, and managing records of people found, missing, hospitalized, or otherwise reported after the **Venezuela earthquake of June 24, 2026**.
 
-Multiple organizations and volunteers are transcribing hospital lists, OCR-processing handwritten registries, and submitting citizen reports. This API provides:
+The API consolidates records from volunteer teams, OCR datasets, citizen reports, and partner tools into a single queryable source of truth while preserving source traceability and protecting operational controls behind API keys.
 
-- A **public search endpoint** to look up people by name, cédula, hospital, place of origin, and more
-- A **multi-tenant ingestion system** with per-team API keys so every record is traceable to its source
-- **Normalized facility data** — hospitals and wards (servicios) are deduplicated across all submissions
-- **Idempotent bulk upsert** — the same record submitted twice updates rather than duplicates
-
-### Primary data sources
-
-| Source | Description |
-|---|---|
-| [edwinvrgs/found-people-ve-bot](https://github.com/edwinvrgs/found-people-ve-bot) | Telegram bot ingesting official and citizen reports |
-| [ecrespo/OCR-data_Terremoto_Venezuela_24062026](https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026) | OCR-transcribed handwritten hospital lists (3,500+ people, 16 facilities) |
+> **Data-safety principle:** make public search useful, keep ingestion accountable, avoid leaking secrets or unnecessary sensitive data, and preserve source attribution for every record.
 
 ---
 
-## Tech Stack
+## What this API provides
 
-- **Runtime:** Python 3.12, [uv](https://docs.astral.sh/uv/) package manager
-- **Framework:** FastAPI 0.115+ with async SQLAlchemy 2.0
-- **Database:** PostgreSQL 16 (`pg_trgm`, `unaccent`, `pgcrypto` extensions)
+- Public search for affected people by name, cédula/document, hospital/facility, origin, status, and general text query.
+- Protected ingestion endpoints for trusted teams using per-team API keys.
+- Idempotent bulk upserts to refresh source records without duplicating them.
+- Normalized facilities and locations to reduce duplicated hospital/ward names.
+- Master-admin endpoints to issue, list, and revoke ingestion keys.
+- Background geocoding for facilities using OpenStreetMap/Nominatim.
+- Alembic migrations, CI checks, Docker support, and Railway deployment config.
+
+---
+
+## Primary data sources
+
+| Source | Description |
+| --- | --- |
+| [edwinvrgs/found-people-ve-bot](https://github.com/edwinvrgs/found-people-ve-bot) | Telegram bot ingesting official and citizen reports |
+| [ecrespo/OCR-data_Terremoto_Venezuela_24062026](https://github.com/ecrespo/OCR-data_Terremoto_Venezuela_24062026) | OCR-transcribed handwritten hospital lists |
+
+---
+
+## Tech stack
+
+- **Runtime:** Python 3.12
+- **Package manager:** [uv](https://docs.astral.sh/uv/)
+- **Framework:** FastAPI 0.115+
+- **Database:** PostgreSQL 16 with `pg_trgm`, `unaccent`, and `pgcrypto`
+- **ORM:** SQLAlchemy 2.0 async
 - **Migrations:** Alembic
 - **Validation:** Pydantic v2
-- **Deployment:** Railway
+- **Deployment:** Railway / Docker
 - **CI:** GitHub Actions
 
 ---
 
-## Database Schema
+## Database model
 
+```text
+instalaciones  — deduplicated facilities: hospitals, shelters, morgues, etc.
+ubicaciones    — specific locations inside/outside a facility: ward, floor, address
+api_keys       — per-team ingestion credentials and attribution
+found_people   — main searchable registry, linked to ubicaciones and api_keys
 ```
-instalaciones     — deduplicated facilities (hospitals, shelters, morgues, …) + address/coords
-ubicaciones       — a specific location within or without a facility (ward, floor, ad-hoc address)
-api_keys          — per-team ingestion credentials
-found_people      — the main registry (FK to ubicaciones, api_keys)
-```
 
-Every `found_people` record carries an `api_key_id` so you always know which team submitted it.
+Every `found_people` record carries an `api_key_id`, so submitted data remains attributable to the team/source that created or updated it.
 
-Facility addresses (`direccion`, `lat`, `lon` on `instalaciones`) are filled asynchronously by a
-background geocoding worker — see the [ETL / data-flow diagram](docs/etl-diagram.md).
+Facility addresses (`direccion`, `lat`, `lon`) are filled asynchronously by the geocoding worker. See:
 
-See the full [ER diagram](docs/er-diagram.md) for column details, relationships, and indexes.
+- [`docs/er-diagram.md`](docs/er-diagram.md)
+- [`docs/etl-diagram.md`](docs/etl-diagram.md)
 
 ---
 
-## API Reference
+## API reference
 
-### Public endpoints (no auth)
+### Public endpoints
+
+No authentication required.
 
 | Method | Path | Description |
-|---|---|---|
-| GET | `/health` | Liveness check + DB ping |
-| GET | `/api/v1/found-people` | Search with filters and pagination |
-| GET | `/api/v1/found-people/{id}` | Get a single record by UUID |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness check and database ping |
+| `GET` | `/api/v1/found-people` | Search records with filters and pagination |
+| `GET` | `/api/v1/found-people/{id}` | Get one record by UUID |
 
-**Search query parameters:**
+Search query parameters:
 
-| Param | Description |
-|---|---|
-| `q` | Full-text search across name, procedencia, and notes |
-| `name` | Search by person name (accent-insensitive, partial match) |
-| `document_id` | Exact match on cédula (digits only, non-digits stripped) |
-| `hospital` | Partial match on hospital name |
+| Parameter | Description |
+| --- | --- |
+| `q` | Full-text search across name, origin/procedencia, and notes |
+| `name` | Accent-insensitive partial match on person name |
+| `document_id` | Exact cédula/document match; non-digits are stripped |
+| `hospital` | Partial match on hospital/facility name |
 | `procedencia` | Partial match on place of origin |
-| `status` | Filter by status (`verified`, `citizen_report`, `needs_review`, `removed`) |
-| `page` | Page number (default: 1, max: 500) |
-| `page_size` | Results per page (default: 10, max: 100) |
+| `status` | Filter by status: `verified`, `citizen_report`, `needs_review`, `removed` |
+| `page` | Page number; default `1`, max `500` |
+| `page_size` | Results per page; default `10`, max `100` |
 
-**Response shape:**
+Example response:
+
 ```json
 {
   "data": [
@@ -87,25 +104,32 @@ See the full [ER diagram](docs/er-diagram.md) for column details, relationships,
       "lugar_procedencia": "La Guaira",
       "relevant_info": "Politraumatismo",
       "status": "verified",
-      "api_key": { "id": "uuid", "team_name": "ocr-ecrespo", "key_prefix": "tvwr_abc1" },
-      "created_at": "2026-06-26T...",
-      "updated_at": "2026-06-26T..."
+      "api_key": {
+        "id": "uuid",
+        "team_name": "ocr-ecrespo",
+        "key_prefix": "tvwr_abc1"
+      },
+      "created_at": "2026-06-26T00:00:00Z",
+      "updated_at": "2026-06-26T00:00:00Z"
     }
   ],
   "pagination": { "page": 1, "page_size": 10, "total": 3569, "total_pages": 357 }
 }
 ```
 
-### Protected endpoints (`X-Admin-Key` header required)
+### Protected ingestion endpoints
+
+Require `X-Admin-Key`.
 
 | Method | Path | Description |
-|---|---|---|
-| POST | `/api/v1/found-people` | Create a single record |
-| POST | `/api/v1/found-people/bulk` | Upsert 1–500 records (idempotent by `source_hash`) |
-| PATCH | `/api/v1/found-people/{id}` | Update record status |
-| DELETE | `/api/v1/found-people` | Soft-delete by `source_url` (sets `status=removed`) |
+| --- | --- | --- |
+| `POST` | `/api/v1/found-people` | Create one record |
+| `POST` | `/api/v1/found-people/bulk` | Upsert 1–500 records idempotently by `source_hash` |
+| `PATCH` | `/api/v1/found-people/{id}` | Update record status/details |
+| `DELETE` | `/api/v1/found-people` | Soft-delete records by `source_url` by setting `status=removed` |
 
-**Bulk request body:**
+Bulk request example:
+
 ```json
 {
   "people": [
@@ -125,52 +149,55 @@ See the full [ER diagram](docs/er-diagram.md) for column details, relationships,
 }
 ```
 
-If `source_hash` is omitted it is auto-generated from `sha256(full_name|document_id|ubicacion_actual|tipo_instalacion)`.
+If `source_hash` is omitted, the API generates one from `sha256(full_name|document_id|ubicacion_actual|tipo_instalacion)`.
 
-**Bulk response:** `created` counts new rows, `updated` counts rows that already existed (matched on `source_hash`) and were refreshed.
+Bulk response:
+
 ```json
-{ "created": 42, "updated": 3, "data": [...] }
+{ "created": 42, "updated": 3, "data": [] }
 ```
 
-### Master admin endpoints (`X-Master-Key` header required)
+### Master-admin endpoints
+
+Require `X-Master-Key`.
 
 | Method | Path | Description |
-|---|---|---|
-| POST | `/api/v1/admin/api-keys` | Create a new team API key (returned once) |
-| GET | `/api/v1/admin/api-keys` | List all keys (prefix + team name only, never raw key) |
-| DELETE | `/api/v1/admin/api-keys/{id}` | Revoke a key |
+| --- | --- | --- |
+| `POST` | `/api/v1/admin/api-keys` | Create a new team API key; raw key is returned once |
+| `GET` | `/api/v1/admin/api-keys` | List keys by prefix/team only; raw keys are never returned |
+| `DELETE` | `/api/v1/admin/api-keys/{id}` | Revoke a key |
 
 ---
 
-## Running Locally
+## Running locally
 
-### With Docker (recommended)
+### Option A: Docker
 
 ```bash
-# 1. Copy env file and set your master key
 cp .env.example .env
-
-# 2. Start Postgres + API
+# Edit MASTER_ADMIN_KEY and any local overrides.
 docker compose up
-
-# API is available at http://localhost:8000
-# Interactive docs at http://localhost:8000/docs
 ```
 
-### Without Docker
+API: <http://localhost:8000>
+
+OpenAPI docs: <http://localhost:8000/docs>
+
+### Option B: uv + local PostgreSQL
+
+Requires PostgreSQL 16 with `pgcrypto`, `pg_trgm`, and `unaccent` available.
 
 ```bash
-# Requires PostgreSQL 16 running locally with pgcrypto, pg_trgm, unaccent extensions
-
 cp .env.example .env
-# Edit DATABASE_URL and MASTER_ADMIN_KEY in .env
-
+# Edit DATABASE_URL and MASTER_ADMIN_KEY.
 uv sync
 uv run alembic upgrade head
 uv run uvicorn app.main:app --reload
 ```
 
-### Create your first API key
+---
+
+## Create an ingestion API key
 
 ```bash
 curl -X POST http://localhost:8000/api/v1/admin/api-keys \
@@ -179,12 +206,15 @@ curl -X POST http://localhost:8000/api/v1/admin/api-keys \
   -d '{"team_name": "my-team", "description": "Initial key"}'
 ```
 
-The response contains the full key — **save it immediately, it is not recoverable**.
+The response contains the full key. Save it immediately; it is not recoverable later.
+
+---
+
+## Import and seed data
 
 ### Import OCR data
 
 ```bash
-# Download consolidado.csv from ecrespo/OCR-data_Terremoto_Venezuela_24062026
 uv run python scripts/import_csv.py consolidado.csv \
   --admin-key tvwr_... \
   --api-url http://localhost:8000
@@ -192,34 +222,26 @@ uv run python scripts/import_csv.py consolidado.csv \
 
 ### Seed test data
 
-For a small, predictable dataset (5 hospitals + ward locations + 5 sample people)
-to develop or test against, run the seed script. It talks to the database directly,
-so point `DATABASE_URL` at your target — for the docker compose Postgres:
-
 ```bash
 DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
   uv run python scripts/seed_test_data.py
 ```
 
-The script is **idempotent** (`ON CONFLICT (id) DO NOTHING`), so re-running it is
-safe and reports how many rows were newly inserted. Pass `--reset` to delete the
-seeded rows first (scoped to their known ids, child → parent order) for a clean
-wipe-and-reseed:
+Reset and reseed:
 
 ```bash
 DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
   uv run python scripts/seed_test_data.py --reset
 ```
 
-> The seeded `api_key` is a placeholder — its hash matches no real key, so it only
-> satisfies the `found_people` foreign key. It will not authenticate API requests.
+The seeded `api_key` is a placeholder and will not authenticate API requests.
 
 ---
 
-## Environment Variables
+## Environment variables
 
 | Variable | Description | Default |
-|---|---|---|
+| --- | --- | --- |
 | `DATABASE_URL` | PostgreSQL async URL | `postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto` |
 | `MASTER_ADMIN_KEY` | Secret for managing API keys | `change-me-in-production` |
 | `CORS_ORIGINS` | JSON list of allowed origins | `["*"]` |
@@ -228,79 +250,116 @@ DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
 | `GEOCODING_WORKER_ENABLED` | Run the in-app background geocoding worker | `true` |
 | `GEOCODING_WORKER_INTERVAL` | Idle seconds between worker cycles when nothing is pending | `60` |
 | `GEOCODING_BATCH_SIZE` | Facilities geocoded per worker cycle | `10` |
-| `GEOCODING_CONCURRENCY` | Parallel Nominatim requests (raise only for self-hosted) | `1` |
-| `GEOCODING_REQUEST_DELAY` | Seconds between Nominatim calls (politeness) | `1.0` |
-| `NOMINATIM_BASE_URL` | Geocoding endpoint | public OSM Nominatim |
-| `NOMINATIM_USER_AGENT` | Identifying User-Agent (required by Nominatim policy) | project default |
+| `GEOCODING_CONCURRENCY` | Parallel Nominatim requests; keep low for public Nominatim | `1` |
+| `GEOCODING_REQUEST_DELAY` | Seconds between Nominatim calls | `1.0` |
+| `NOMINATIM_BASE_URL` | Geocoding endpoint | Public OSM Nominatim |
+| `NOMINATIM_USER_AGENT` | Identifying user agent required by Nominatim policy | Project default |
+| `POSTHOG_API_KEY` | Optional analytics key | Empty |
+
+Never commit real `.env` files, production database URLs, API keys, master keys, or exports with personal data.
 
 ---
 
-## Running Tests
+## Validation
 
 ```bash
-# Schema unit tests only (no DB needed)
+uv run ruff check .
+uv run python -m compileall app migrations tests
+```
+
+Schema-only tests:
+
+```bash
 uv run pytest tests/test_schemas.py -v
+```
 
-# All tests (requires a test PostgreSQL DB)
-# Set DATABASE_URL to point at terremoto_test database
-uv run pytest tests/ -v
+Full test suite, with `DATABASE_URL` pointing to a test PostgreSQL database:
+
+```bash
+uv run pytest tests/ -v --asyncio-mode=auto
+```
+
+Migration integrity check:
+
+```bash
+uv run alembic upgrade head
+uv run alembic downgrade base
+uv run alembic upgrade head
 ```
 
 ---
 
-## Deployment (Railway)
+## Deployment: Railway
 
-1. Create a new Railway project and add a **PostgreSQL** plugin
-2. Connect this repository
-3. Set environment variables in Railway:
-   - `DATABASE_URL` (Railway provides this automatically from the plugin)
+1. Create a Railway project and add PostgreSQL.
+2. Connect this repository.
+3. Set environment variables:
+   - `DATABASE_URL` from Railway PostgreSQL
    - `MASTER_ADMIN_KEY`
-4. Railway picks up `railway.toml` and runs:
-   ```
-   alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
-   ```
+   - Production-safe `CORS_ORIGINS`
+   - Optional geocoding/analytics variables
+4. Railway uses `railway.toml` to run migrations and start the API.
 
 ---
 
-## Project Structure
+## Project structure
 
-```
+```text
 app/
-  main.py         FastAPI app factory and middleware
-  config.py       Settings via pydantic-settings
-  database.py     Async SQLAlchemy engine and session dependency
-  models.py       SQLAlchemy ORM models
-  schemas.py      Pydantic v2 request/response schemas
-  auth.py         API key and master key authentication dependencies
-  crud.py         Database operations (search, upsert, find-or-create)
-  geocoding.py    OpenStreetMap Nominatim client (pure HTTP)
-  geocoding_worker.py  Background worker that fills facility addresses
+  main.py              FastAPI app, middleware, router mounting
+  config.py            Settings via pydantic-settings
+  database.py          Async SQLAlchemy engine/session dependency
+  models.py            SQLAlchemy ORM models
+  schemas.py           Pydantic request/response schemas
+  auth.py              API-key and master-key dependencies
+  crud.py              Search, upsert, and find-or-create operations
+  geocoding.py         OpenStreetMap/Nominatim client
+  geocoding_worker.py  Background facility geocoding worker
   routers/
-    health.py     GET /health
-    people.py     /api/v1/found-people routes
-    admin.py      /api/v1/admin/api-keys routes
+    health.py          GET /health
+    people.py          /api/v1/found-people routes
+    admin.py           /api/v1/admin/api-keys routes
 migrations/
-  versions/001_initial.py            Initial schema + extensions
-  versions/002_instalacion_coords.py lat/lon + geocoding queue (geocoded_at)
+  versions/            Alembic migrations
 scripts/
-  import_csv.py            One-shot CSV importer
-  seed_test_data.py        Seed a small fixed test dataset (--reset to wipe + reseed)
-  backfill_addresses.py    Drain the geocoding queue on demand
-  dedup_facilities.py      Merge duplicate facilities by canonical name
+  import_csv.py        CSV importer through protected API
+  seed_test_data.py    Small deterministic seed dataset
+  backfill_addresses.py
+  dedup_facilities.py
 docs/
-  er-diagram.md   Entity-relationship diagram
-  etl-diagram.md  Ingestion + geocoding data-flow diagram
+  er-diagram.md
+  etl-diagram.md
 tests/
-  test_schemas.py          Pydantic unit tests
-  test_crud.py             DB integration tests
-  test_api.py              Full HTTP tests
-  test_geocoding.py        Nominatim client unit tests
-  test_geocoding_worker.py Worker queue/outcome tests
-  test_docs.py             OpenAPI/Swagger surface tests
+  test_api.py
+  test_crud.py
+  test_docs.py
+  test_geocoding.py
+  test_geocoding_worker.py
+  test_schemas.py
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request.
+
+Use the pull request template, include validation results, and call out any endpoint, migration, ingestion, privacy, or deployment impact.
+
+---
+
+## Security
+
+Please do not open public issues for vulnerabilities, leaked secrets, auth bypasses, ingestion abuse, or personal-data exposure. Follow [`SECURITY.md`](SECURITY.md).
+
+---
+
+## Code of conduct
+
+This project supports disaster-relief coordination. Contributors are expected to communicate respectfully and protect affected people’s dignity and privacy. See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
 
 ---
 
 ## License
 
-MIT
+MIT — see [`LICENSE`](LICENSE).
