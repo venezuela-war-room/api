@@ -5,9 +5,9 @@ from alembic import context
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy.pool import NullPool
 
+import app.models  # noqa: F401 — ensure models are registered
 from app.config import settings
 from app.database import Base
-import app.models  # noqa: F401 — ensure models are registered
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)
