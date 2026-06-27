@@ -8,10 +8,19 @@ the docker compose Postgres:
         uv run python scripts/seed_test_data.py
 
 (The scheme is normalized to asyncpg automatically by app.config.)
+
+Pass --reset to delete the seeded rows (by their known ids) before re-inserting,
+for a clean wipe-and-reseed during testing.
 """
 
+import argparse
 import asyncio
+import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert
 
 from app.database import AsyncSessionLocal
@@ -128,8 +137,29 @@ async def _insert(session, model, rows):
     return result.rowcount
 
 
-async def main() -> None:
+async def _delete(session, model, rows):
+    """Delete the seeded rows for a model by their known primary keys."""
+    ids = [r["id"] for r in rows]
+    result = await session.execute(delete(model).where(model.id.in_(ids)))
+    return result.rowcount
+
+
+async def reset(session) -> None:
+    """Remove previously seeded rows. Child → parent order to respect FKs."""
+    people = await _delete(session, FoundPerson, FOUND_PEOPLE)
+    ubic = await _delete(session, Ubicacion, UBICACIONES)
+    inst = await _delete(session, Instalacion, INSTALACIONES)
+    keys = await _delete(session, ApiKey, API_KEYS)
+    print(
+        f"Reset complete (deleted): "
+        f"found_people={people}, ubicaciones={ubic}, instalaciones={inst}, api_keys={keys}"
+    )
+
+
+async def main(do_reset: bool) -> None:
     async with AsyncSessionLocal() as session:
+        if do_reset:
+            await reset(session)
         # Order matters: parents before children (FK dependencies).
         keys = await _insert(session, ApiKey, API_KEYS)
         inst = await _insert(session, Instalacion, INSTALACIONES)
@@ -144,4 +174,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description="Seed the database with test data.")
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Delete the seeded rows (by their known ids) before re-seeding.",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(do_reset=args.reset))
