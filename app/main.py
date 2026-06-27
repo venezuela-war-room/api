@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
+from app.analytics import analytics_middleware, capture_event, shutdown_analytics
 from app.config import settings
 from app.routers import admin, health, people
 
@@ -51,7 +52,11 @@ TAGS_METADATA = [
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    yield
+    capture_event("server_started")
+    try:
+        yield
+    finally:
+        await shutdown_analytics()
 
 
 app = FastAPI(
@@ -64,6 +69,8 @@ app = FastAPI(
     license_info={"name": "MIT"},
     swagger_ui_parameters={"persistAuthorization": True, "displayRequestDuration": True},
 )
+
+app.middleware("http")(analytics_middleware)
 
 app.add_middleware(
     CORSMiddleware,
