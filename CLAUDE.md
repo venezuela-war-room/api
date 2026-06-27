@@ -67,13 +67,46 @@ Test database: `terremoto_test`. Set `DATABASE_URL` env var to point at it when 
 | `CORS_ORIGINS` | JSON list, e.g. `["https://myapp.com"]` |
 | `DEBUG` | Set `true` to echo SQL queries |
 
+## API documentation (Swagger / OpenAPI)
+
+FastAPI auto-generates the OpenAPI schema and serves interactive docs. There is no
+separate spec file to maintain — the docs are produced from the route decorators and
+Pydantic schemas, so keeping them rich is part of writing each endpoint.
+
+- **Swagger UI:** `/docs` — **ReDoc:** `/redoc` — **raw schema:** `/openapi.json`
+- `/` redirects to `/docs`.
+- Top-level metadata (title, description, tag descriptions, contact/license, Swagger UI
+  options) lives in `app/main.py` (`API_DESCRIPTION`, `TAGS_METADATA`, the `FastAPI(...)`
+  call).
+- Auth shows up as two **Authorize** schemes: `AdminKey` (`X-Admin-Key`) and `MasterKey`
+  (`X-Master-Key`). These are declared via `APIKeyHeader(..., scheme_name=...)` in
+  `app/auth.py`. The distinct `scheme_name` on each is **required** — without it both
+  collapse into one scheme and one of the keys disappears from the docs.
+- Each route carries a `summary`, `description`, and documented non-2xx `responses=`.
+- Request bodies carry `model_config["json_schema_extra"]["examples"]` in `app/schemas.py`
+  so "Try it out" is pre-filled.
+- Docs/OpenAPI behavior is covered by `tests/test_docs.py`.
+
+**On every change, update the Swagger docs and the tests to match:**
+
+- New/changed route → add or update its `summary`, `description`, tag, and `responses=`,
+  and adjust `tests/test_docs.py` / `tests/test_api.py` accordingly.
+- New/changed request schema → update its `json_schema_extra` example.
+- New auth scheme or header → give it a unique `scheme_name` and assert it in
+  `tests/test_docs.py`.
+- Run `uv run pytest tests/ -v` before considering the change done.
+
 ## Adding a new endpoint
 
-1. Add route in `app/routers/people.py` (or `admin.py`)
-2. Add Pydantic schema in `app/schemas.py` if new input/output shape
+1. Add route in `app/routers/people.py` (or `admin.py`) — include `summary`,
+   `description`, tag, and documented `responses=` for Swagger
+2. Add Pydantic schema in `app/schemas.py` if new input/output shape — add a
+   `json_schema_extra` example for any request body
 3. Add DB logic in `app/crud.py`
-4. Add test cases in `tests/test_api.py`
+4. Add test cases in `tests/test_api.py`, and update `tests/test_docs.py` if the
+   OpenAPI surface (tags, security schemes, documented paths) changed
 5. If schema changes, run `uv run alembic revision -m "..."` and fill in `upgrade()`/`downgrade()`
+6. Run `uv run pytest tests/ -v`
 
 ## What NOT to do
 

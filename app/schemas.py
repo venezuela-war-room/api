@@ -44,6 +44,27 @@ class PersonCreate(_BaseClean):
     status: str = Field(default="verified")
     raw: dict[str, Any] = Field(default_factory=dict)
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "full_name": "Álvarez Maikeli",
+                    "document_id": "30045442",
+                    "age": 34,
+                    "ubicacion_actual": "Hospital José Gregorio Hernández",
+                    "tipo_instalacion": "hospital",
+                    "ubicacion_detalles": "Lista de pacientes, piso 3",
+                    "lugar_procedencia": "La Guaira",
+                    "relevant_info": "Politraumatismo, estable",
+                    "fallecido": False,
+                    "source_url": "https://example.org/listado-pacientes",
+                    "source_hash": "a1b2c3d4e5f6",
+                    "status": "verified",
+                }
+            ]
+        }
+    }
+
     @field_validator("document_id")
     @classmethod
     def validate_document_id(cls, v: str | None) -> str | None:
@@ -72,6 +93,31 @@ class PersonCreate(_BaseClean):
 
 class PersonBulkCreate(BaseModel):
     people: list[PersonCreate] = Field(min_length=1, max_length=500)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "people": [
+                        {
+                            "full_name": "Álvarez Maikeli",
+                            "document_id": "30045442",
+                            "ubicacion_actual": "Hospital José Gregorio Hernández",
+                            "tipo_instalacion": "hospital",
+                            "source_hash": "a1b2c3d4e5f6",
+                        },
+                        {
+                            "full_name": "Aguero Johanna",
+                            "document_id": "37454987",
+                            "ubicacion_actual": "Albergue Catia",
+                            "tipo_instalacion": "albergue",
+                            "source_hash": "f6e5d4c3b2a1",
+                        },
+                    ]
+                }
+            ]
+        }
+    }
 
 
 # ── Response schemas ───────────────────────────────────────────────────────────
@@ -180,6 +226,14 @@ class BulkUpsertResponse(BaseModel):
 class ApiKeyCreate(BaseModel):
     team_name: str = Field(min_length=2, max_length=100)
     description: str | None = Field(default=None, max_length=500)
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {"team_name": "equipo-la-guaira", "description": "Voluntarios zona costera"}
+            ]
+        }
+    }
 
 
 class ApiKeyCreated(BaseModel):

@@ -9,8 +9,8 @@ from app.config import settings
 from app.database import get_db
 from app.models import ApiKey
 
-admin_key_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
-master_key_header = APIKeyHeader(name="X-Master-Key", auto_error=False)
+admin_key_header = APIKeyHeader(name="X-Admin-Key", scheme_name="AdminKey", auto_error=False)
+master_key_header = APIKeyHeader(name="X-Master-Key", scheme_name="MasterKey", auto_error=False)
 
 
 def _hash_key(raw: str) -> str:
