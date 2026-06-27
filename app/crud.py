@@ -109,9 +109,20 @@ def _combine_detalles(*parts: str | None) -> str | None:
     return " — ".join(seen) or None
 
 
-def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str | None, tipo_instalacion: str | None) -> str:
-    parts = "|".join([full_name.lower(), document_id or "", ubicacion_actual or "", tipo_instalacion or ""])
-    return hashlib.sha256(parts.encode()).hexdigest()
+def _normalize_person_name(full_name: str) -> str:
+    return _normalize(full_name)
+
+
+def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str | None = None, tipo_instalacion: str | None = None) -> str:
+    """Build the fallback person identity key used when callers omit source_hash.
+
+    Prefer a stable document id when present. Otherwise use only the normalized
+    person name. Location is deliberately excluded: the same person can appear in
+    multiple wards/hospitals/source rows, and those should update the person row
+    instead of creating duplicates in public search.
+    """
+    key = f"doc:{document_id}" if document_id else f"name:{_normalize_person_name(full_name)}"
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 async def find_or_create_instalacion(
@@ -352,25 +363,26 @@ async def search_people(db: AsyncSession, params: SearchParams) -> tuple[list[Fo
         base = base.where(FoundPerson.document_id == params.document_id)
 
     if params.name:
-        base = base.where(func.unaccent(FoundPerson.full_name).ilike(f"%{params.name}%"))
+        name_pattern = f"%{_normalize(params.name)}%"
+        base = base.where(func.unaccent(func.lower(FoundPerson.full_name)).ilike(name_pattern))
 
     if params.q:
-        pattern = f"%{params.q}%"
+        pattern = f"%{_normalize(params.q)}%"
         base = base.where(
-            func.unaccent(FoundPerson.full_name).ilike(pattern)
-            | func.unaccent(FoundPerson.lugar_procedencia).ilike(pattern)
-            | func.unaccent(FoundPerson.relevant_info).ilike(pattern)
+            func.unaccent(func.lower(FoundPerson.full_name)).ilike(pattern)
+            | func.unaccent(func.lower(FoundPerson.lugar_procedencia)).ilike(pattern)
+            | func.unaccent(func.lower(FoundPerson.relevant_info)).ilike(pattern)
         )
 
     if params.ubicacion or params.tipo_instalacion:
         base = base.join(FoundPerson.ubicacion).join(Ubicacion.instalacion)
         if params.ubicacion:
-            base = base.where(func.unaccent(Instalacion.nombre).ilike(f"%{params.ubicacion}%"))
+            base = base.where(func.unaccent(func.lower(Instalacion.nombre)).ilike(f"%{_normalize(params.ubicacion)}%"))
         if params.tipo_instalacion:
             base = base.where(Instalacion.tipo == params.tipo_instalacion)
 
     if params.procedencia:
-        base = base.where(func.unaccent(FoundPerson.lugar_procedencia).ilike(f"%{params.procedencia}%"))
+        base = base.where(func.unaccent(func.lower(FoundPerson.lugar_procedencia)).ilike(f"%{_normalize(params.procedencia)}%"))
 
     if params.fallecido is not None:
         base = base.where(FoundPerson.fallecido == params.fallecido)
