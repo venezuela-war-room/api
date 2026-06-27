@@ -32,6 +32,7 @@ class GeocodeResult:
     direccion: str | None
     lat: float | None
     lon: float | None
+    osm_id: str | None = None  # stable "{osm_type}/{osm_id}", e.g. "way/228913258"
 
 
 @dataclass(frozen=True)
@@ -58,9 +59,14 @@ def _parse(payload: list) -> GeocodeOutcome:
         lon = float(first["lon"]) if first.get("lon") is not None else None
     except (TypeError, ValueError):
         lat = lon = None
+    osm_type, osm_id = first.get("osm_type"), first.get("osm_id")
+    osm_ref = f"{osm_type}/{osm_id}" if osm_type and osm_id is not None else None
     if direccion is None and lat is None and lon is None:
         return NO_MATCH
-    return GeocodeOutcome(result=GeocodeResult(direccion=direccion, lat=lat, lon=lon), completed=True)
+    return GeocodeOutcome(
+        result=GeocodeResult(direccion=direccion, lat=lat, lon=lon, osm_id=osm_ref),
+        completed=True,
+    )
 
 
 async def geocode_one(client: httpx.AsyncClient, nombre: str) -> GeocodeOutcome:

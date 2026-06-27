@@ -16,8 +16,8 @@ import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql import func
 
+from app import crud
 from app.config import settings
 from app.database import AsyncSessionLocal
 from app.geocoding import geocode_batch
@@ -47,19 +47,45 @@ async def process_pending_batch(db: AsyncSession) -> int:
     if not instalaciones:
         return 0
 
-    outcomes = await geocode_batch(i.nombre for i in instalaciones)
+    # Geocode the canonical (normalized) name, not the raw one: Nominatim fails on
+    # abbreviations like "Hosp. Domingo Luciani" but resolves "hospital domingo luciani",
+    # which also lets variants converge on the same osm_id.
+    outcomes = await geocode_batch(i.normalized_nombre for i in instalaciones)
 
     processed = 0
-    now = func.now()
+    now = crud._utcnow()
+    # Canonical facility per OSM place resolved during this batch (catches intra-batch dups
+    # before they hit the partial-unique index on osm_id).
+    seen_osm: dict[str, Instalacion] = {}
     for inst in instalaciones:
-        outcome = outcomes.get(inst.nombre)
+        outcome = outcomes.get(inst.normalized_nombre)
         if outcome is None or not outcome.completed:
             # Geocoding disabled or a transient failure — leave pending for a retry.
             continue
-        if outcome.result:
-            inst.direccion = outcome.result.direccion
-            inst.lat = outcome.result.lat
-            inst.lon = outcome.result.lon
+        result = outcome.result
+
+        if result and result.osm_id:
+            canonical = seen_osm.get(result.osm_id)
+            if canonical is None:
+                existing = await db.execute(
+                    select(Instalacion)
+                    .where(Instalacion.osm_id == result.osm_id)
+                    .with_for_update()
+                )
+                canonical = existing.scalar_one_or_none()
+            if canonical is not None and canonical.id != inst.id:
+                # Same real place already has a facility row — fold this one into it.
+                await crud.merge_instalacion(db, inst, canonical)
+                seen_osm[result.osm_id] = canonical
+                processed += 1
+                continue
+            inst.osm_id = result.osm_id
+            seen_osm[result.osm_id] = inst
+
+        if result:
+            inst.direccion = result.direccion
+            inst.lat = result.lat
+            inst.lon = result.lon
         inst.geocoded_at = now
         processed += 1
 

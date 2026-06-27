@@ -30,6 +30,9 @@ class Instalacion(Base):
     direccion: Mapped[str | None] = mapped_column(String, nullable=True)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Canonical OSM identity ("{osm_type}/{osm_id}"); shared by name variants of the
+    # same real place. Partial-unique (one facility per OSM place).
+    osm_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # NULL = still needs geocoding; stamped by the background worker once attempted.
     geocoded_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=func.now())

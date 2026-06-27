@@ -17,13 +17,17 @@ a self-hosted/commercial instance.
 
 import argparse
 import asyncio
+import sys
+from pathlib import Path
 
-from sqlalchemy import func, select
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `app` importable
 
-from app.config import settings
-from app.database import AsyncSessionLocal
-from app.geocoding_worker import process_pending_batch
-from app.models import Instalacion
+from sqlalchemy import func, select  # noqa: E402
+
+from app.config import settings  # noqa: E402
+from app.database import AsyncSessionLocal  # noqa: E402
+from app.geocoding_worker import process_pending_batch  # noqa: E402
+from app.models import Instalacion  # noqa: E402
 
 
 async def _count_pending() -> int:

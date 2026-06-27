@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import geocoding, geocoding_worker
@@ -28,12 +29,12 @@ async def test_process_pending_batch_applies_outcomes(db: AsyncSession, monkeypa
     async def fake_geocode_batch(names):
         names = set(names)
         out: dict[str, GeocodeOutcome] = {}
-        if matched.nombre in names:
-            out[matched.nombre] = GeocodeOutcome(GeocodeResult("Calle 1, Caracas", 10.5, -66.9), True)
-        if no_match.nombre in names:
-            out[no_match.nombre] = geocoding.NO_MATCH
-        if transient.nombre in names:
-            out[transient.nombre] = geocoding.TRANSIENT
+        if matched.normalized_nombre in names:
+            out[matched.normalized_nombre] = GeocodeOutcome(GeocodeResult("Calle 1, Caracas", 10.5, -66.9), True)
+        if no_match.normalized_nombre in names:
+            out[no_match.normalized_nombre] = geocoding.NO_MATCH
+        if transient.normalized_nombre in names:
+            out[transient.normalized_nombre] = geocoding.TRANSIENT
         # Any other pending rows from other tests get no outcome → left pending.
         return out
 
@@ -78,3 +79,58 @@ async def test_claim_pending_skips_already_geocoded(db: AsyncSession):
 
     claimed = await geocoding_worker.claim_pending(db, limit=10_000)
     assert done.id not in {c.id for c in claimed}
+
+
+@pytest.mark.asyncio
+async def test_worker_merges_facilities_with_same_osm_id(db: AsyncSession, monkeypatch):
+    monkeypatch.setattr(settings, "geocoding_batch_size", 10_000)
+    a = await _seed(db, "Hospital Domingo Luciani WK")
+    b = await _seed(db, "Hosp Domingo Luciani WK")
+    await db.commit()
+    osm = "way/700700700"
+
+    async def fake_geocode_batch(names):
+        names = set(names)
+        out = {}
+        for n in (a.normalized_nombre, b.normalized_nombre):
+            if n in names:
+                out[n] = GeocodeOutcome(GeocodeResult("Addr", 10.0, -66.0, osm_id=osm), True)
+        return out
+
+    monkeypatch.setattr(geocoding_worker, "geocode_batch", fake_geocode_batch)
+
+    await geocoding_worker.process_pending_batch(db)
+
+    # The two name variants collapsed into one facility keyed on the OSM place.
+    same_place = (await db.execute(select(Instalacion).where(Instalacion.osm_id == osm))).scalars().all()
+    assert len(same_place) == 1
+    remaining = (
+        await db.execute(select(Instalacion).where(Instalacion.id.in_([a.id, b.id])))
+    ).scalars().all()
+    assert len(remaining) == 1  # the other row was merged away
+
+
+@pytest.mark.asyncio
+async def test_worker_keeps_distinct_osm_ids_separate(db: AsyncSession, monkeypatch):
+    monkeypatch.setattr(settings, "geocoding_batch_size", 10_000)
+    a = await _seed(db, "Distinct OSM A WK")
+    b = await _seed(db, "Distinct OSM B WK")
+    await db.commit()
+
+    async def fake_geocode_batch(names):
+        names = set(names)
+        out = {}
+        if a.normalized_nombre in names:
+            out[a.normalized_nombre] = GeocodeOutcome(GeocodeResult("A", 1.0, 2.0, osm_id="way/111"), True)
+        if b.normalized_nombre in names:
+            out[b.normalized_nombre] = GeocodeOutcome(GeocodeResult("B", 3.0, 4.0, osm_id="way/222"), True)
+        return out
+
+    monkeypatch.setattr(geocoding_worker, "geocode_batch", fake_geocode_batch)
+
+    await geocoding_worker.process_pending_batch(db)
+
+    remaining = (
+        await db.execute(select(Instalacion).where(Instalacion.id.in_([a.id, b.id])))
+    ).scalars().all()
+    assert len(remaining) == 2  # different places stay separate

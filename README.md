@@ -261,6 +261,7 @@ migrations/
 scripts/
   import_csv.py            One-shot CSV importer
   backfill_addresses.py    Drain the geocoding queue on demand
+  dedup_facilities.py      Merge duplicate facilities by canonical name
 docs/
   er-diagram.md   Entity-relationship diagram
   etl-diagram.md  Ingestion + geocoding data-flow diagram

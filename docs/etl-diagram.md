@@ -29,13 +29,18 @@ flowchart TD
     subgraph worker["Background geocoding worker (app/geocoding_worker.py)"]
         LOOP["run_worker loop<br/>(started in app lifespan)"]
         CLAIM["claim_pending<br/>WHERE geocoded_at IS NULL<br/>FOR UPDATE SKIP LOCKED"]
-        OSM{{"OpenStreetMap Nominatim<br/>app/geocoding.py"}}
-        WRITE["write direccion / lat / lon<br/>stamp geocoded_at"]
-        LOOP --> CLAIM --> OSM --> WRITE
+        OSM{{"OpenStreetMap Nominatim<br/>(query = normalized name)"}}
+        DEDUP{"osm_id already<br/>on another facility?"}
+        MERGE["merge_instalacion<br/>fold into canonical row"]
+        WRITE["write direccion / lat / lon / osm_id<br/>stamp geocoded_at"]
+        LOOP --> CLAIM --> OSM --> DEDUP
+        DEDUP -->|"yes"| MERGE
+        DEDUP -->|"no"| WRITE
     end
 
     DB -->|"pending facilities"| CLAIM
     WRITE -->|"update"| DB
+    MERGE -->|"merge + delete dup"| DB
 
     DB -->|"GET /api/v1/found-people (public search)"| CONSUMERS["War Room UI / consumers"]
 
@@ -49,9 +54,13 @@ For each claimed facility the worker calls Nominatim and acts on the outcome:
 
 | Outcome | Condition | Action |
 |---|---|---|
-| **matched** | OSM returned a result | write `direccion`/`lat`/`lon`, stamp `geocoded_at` (done) |
+| **matched** | OSM returned a result | if another facility already has this `osm_id` → `merge_instalacion` into it; else write `direccion`/`lat`/`lon`/`osm_id`, stamp `geocoded_at` |
 | **no match** | HTTP 200, empty list | stamp `geocoded_at` only — stop retrying a dead end |
 | **transient** | timeout / network / 5xx | leave `geocoded_at` NULL — retried next cycle |
+
+The worker geocodes the **normalized** facility name (`normalized_nombre`), not the raw one —
+Nominatim resolves "hospital domingo luciani" but not "Hosp. Domingo Luciani", and the canonical
+query is what makes variants land on the same `osm_id`.
 
 ## Key properties
 

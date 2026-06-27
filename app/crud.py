@@ -2,8 +2,9 @@ import hashlib
 import re
 import unicodedata
 import uuid
+from datetime import datetime, timezone
 
-from sqlalchemy import func, literal_column, select, update
+from sqlalchemy import delete, func, literal_column, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -12,10 +13,50 @@ from app.models import ApiKey, FoundPerson, Instalacion, Ubicacion
 from app.schemas import PersonCreate, SearchParams
 
 
+def _utcnow() -> datetime:
+    # Assign a concrete Python value (not func.now()) so the attribute survives flush
+    # without needing a DB refresh — important since merge_instalacion reads geocoded_at.
+    return datetime.now(timezone.utc)
+
+
 def _normalize(s: str) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     return re.sub(r"\s+", " ", s).strip().lower()
+
+
+# Conservative facility-name canonicalization, the deterministic first line of dedup.
+# Abbreviations are expanded so e.g. "Hosp." and "Hospital" align; honorifics/connectors
+# are dropped. The facility-TYPE word (hospital, clinica, …) is deliberately KEPT so two
+# genuinely different places ("Hospital Vargas" vs "Clínica Vargas") stay distinct.
+_FACILITY_ABBREVIATIONS = {
+    "hosp": "hospital",
+    "hptal": "hospital",
+    "gral": "general",
+    "univ": "universitario",
+    "ctro": "centro",
+    "js": "jose",
+    "dr": "",
+    "dra": "",
+    "sr": "",
+    "sra": "",
+}
+_FACILITY_STOPWORDS = {"de", "del", "la", "el", "los", "las", "y"}
+
+
+def _normalize_facility(nombre: str) -> str:
+    s = unicodedata.normalize("NFKD", nombre)
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    s = re.sub(r"\([^)]*\)", " ", s)  # drop parenthetical qualifiers, e.g. "(El Llanito)"
+    s = re.sub(r"[^a-z0-9 ]", " ", s)  # punctuation → space
+    tokens: list[str] = []
+    for tok in s.split():
+        tok = _FACILITY_ABBREVIATIONS.get(tok, tok)
+        if tok and tok not in _FACILITY_STOPWORDS:
+            tokens.append(tok)
+    result = " ".join(tokens)
+    # Fall back to the basic normalization if canonicalization stripped everything.
+    return result or _normalize(nombre)
 
 
 def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str | None, tipo_instalacion: str | None) -> str:
@@ -29,7 +70,7 @@ async def find_or_create_instalacion(
     nombre: str,
     direccion: str | None = None,
 ) -> Instalacion:
-    norm = _normalize(nombre)
+    norm = _normalize_facility(nombre)
     result = await db.execute(
         select(Instalacion).where(Instalacion.tipo == tipo, Instalacion.normalized_nombre == norm)
     )
@@ -42,14 +83,14 @@ async def find_or_create_instalacion(
             nombre=nombre,
             normalized_nombre=norm,
             direccion=direccion,
-            geocoded_at=func.now() if direccion else None,
+            geocoded_at=_utcnow() if direccion else None,
         )
         db.add(instalacion)
         await db.flush()
     elif instalacion.direccion is None and direccion is not None:
         # Backfill an existing facility that was first created without an address.
         instalacion.direccion = direccion
-        instalacion.geocoded_at = func.now()
+        instalacion.geocoded_at = _utcnow()
         await db.flush()
     return instalacion
 
@@ -76,6 +117,53 @@ async def find_or_create_ubicacion(
         db.add(ubicacion)
         await db.flush()
     return ubicacion
+
+
+async def merge_instalacion(db: AsyncSession, source: Instalacion, target: Instalacion) -> Instalacion:
+    """Fold ``source`` into ``target`` so a real place has a single facility row.
+
+    Reassigns ``source``'s ubicaciones to ``target``, respecting the
+    ``(instalacion_id, normalized_detalles)`` uniqueness (colliding wards are merged and
+    their people repointed), copies any canonical fields ``target`` is missing, then
+    deletes ``source``. Returns ``target``.
+    """
+    if source.id == target.id:
+        return target
+
+    target_ubis = await db.execute(select(Ubicacion).where(Ubicacion.instalacion_id == target.id))
+    target_detalles = {u.normalized_detalles: u.id for u in target_ubis.scalars().all()}
+
+    source_ubis = await db.execute(select(Ubicacion).where(Ubicacion.instalacion_id == source.id))
+    # Core (not ORM) updates/deletes by id: ORM cascade handling would lazy-load
+    # relationships, which isn't allowed inside the async session.
+    for ubi in source_ubis.scalars().all():
+        existing_id = target_detalles.get(ubi.normalized_detalles)
+        if existing_id is not None:
+            # Same ward already exists on the target — repoint people, drop the dup ward.
+            await db.execute(
+                update(FoundPerson).where(FoundPerson.ubicacion_id == ubi.id).values(ubicacion_id=existing_id)
+            )
+            await db.execute(delete(Ubicacion).where(Ubicacion.id == ubi.id))
+        else:
+            await db.execute(
+                update(Ubicacion).where(Ubicacion.id == ubi.id).values(instalacion_id=target.id)
+            )
+            target_detalles[ubi.normalized_detalles] = ubi.id
+
+    # Backfill canonical fields the target is missing from the source.
+    if target.direccion is None and source.direccion is not None:
+        target.direccion = source.direccion
+        target.lat = source.lat
+        target.lon = source.lon
+    if target.osm_id is None and source.osm_id is not None:
+        target.osm_id = source.osm_id
+    if target.geocoded_at is None and source.geocoded_at is not None:
+        target.geocoded_at = source.geocoded_at
+
+    await db.flush()  # persist FK reassignments + target backfill before removing the source
+    await db.execute(delete(Instalacion).where(Instalacion.id == source.id))
+    db.expunge(source)
+    return target
 
 
 def _person_load_options():

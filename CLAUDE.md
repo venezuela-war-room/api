@@ -36,15 +36,22 @@ tests/            conftest.py sets up a test DB session; fixtures share session-
 ### Deduplication
 Every record has a `source_hash` (SHA-256). Upserts use `ON CONFLICT (source_hash) DO UPDATE`. If the caller doesn't provide `source_hash`, `crud.py` generates it from `sha256(full_name|document_id|hospital)`.
 
-### Facility normalization
-Before inserting a `found_people` row, `crud.find_or_create_hospital` and `crud.find_or_create_servicio` normalize the name (NFKD → strip combining chars → lowercase) and do a SELECT before INSERT. This keeps hospitals and servicios deduplicated across teams.
+### Facility dedup — one real place = one `instalaciones` row
+Two complementary layers keep a facility like "Hospital Domingo Luciani" from fanning out across teams:
+
+1. **Deterministic normalization** (`crud._normalize_facility`): strip accents/case, drop parentheticals, expand abbreviations (`Hosp.`→`hospital`), drop honorifics/connector stopwords — the facility-TYPE word is kept so `Hospital Vargas` ≠ `Clínica Vargas`. `find_or_create_instalacion` dedups on `(tipo, normalized_nombre)` (unique constraint `uq_instalacion_tipo_nombre`). This collapses abbreviation/format variants at ingestion.
+2. **Geocode-anchored identity** (`instalaciones.osm_id`): the worker geocodes the **canonical** name and stores the stable OSM `"{osm_type}/{osm_id}"`. Variants that normalization missed (typos, word order) but resolve to the same OSM place are **merged** by the worker via `crud.merge_instalacion`. A partial unique index `uq_instalaciones_osm_id` enforces one facility per OSM place. This can merge across `tipo` (same real place).
+
+`crud.merge_instalacion(source, target)` folds one facility into another: it reassigns `ubicaciones`/`found_people` (merging colliding wards via the `(instalacion_id, normalized_detalles)` rule) and deletes the source — using **Core** updates/deletes (ORM cascade would lazy-load in the async session). `scripts/dedup_facilities.py [--apply]` runs the normalization-merge over existing rows (needed once after a normalization change).
+
+`find_or_create_ubicacion` still uses the plain `_normalize` for ward `detalles`.
 
 ### Facility address geocoding (OpenStreetMap) — background worker
 `instalaciones` rows carry `direccion`, `lat`, `lon`, and `geocoded_at`. **Geocoding is off the request path** — ingestion never calls OpenStreetMap. See the data-flow in `docs/etl-diagram.md`.
 
 - **Queue marker:** `geocoded_at IS NULL` ⟺ "needs geocoding", backed by the partial index `ix_instalaciones_pending_geocode`. On ingestion, `crud.find_or_create_instalacion` stores a client-supplied `direccion` (and sets `geocoded_at = now()`); with no address it leaves `geocoded_at` NULL so the worker picks it up.
-- **Worker:** `app/geocoding_worker.py` `run_worker()` is started in the `app/main.py` lifespan (gated by `geocoding_worker_enabled` + `geocoding_enabled`). Each cycle `claim_pending` selects `WHERE geocoded_at IS NULL ... FOR UPDATE SKIP LOCKED` (multi-process safe), `geocode_batch`es the names, and writes results.
-- **Outcomes** (`GeocodeOutcome`): matched → write `direccion`/`lat`/`lon` + stamp `geocoded_at`; no-match (HTTP 200 empty) → stamp `geocoded_at` only (stop retrying); transient (timeout/5xx) → leave `geocoded_at` NULL (retried next cycle).
+- **Worker:** `app/geocoding_worker.py` `run_worker()` is started in the `app/main.py` lifespan (gated by `geocoding_worker_enabled` + `geocoding_enabled`). Each cycle `claim_pending` selects `WHERE geocoded_at IS NULL ... FOR UPDATE SKIP LOCKED` (multi-process safe), `geocode_batch`es the **normalized** names (Nominatim fails on raw abbreviations like "Hosp." but resolves "hospital …"), and writes results.
+- **Outcomes** (`GeocodeOutcome`): matched → write `direccion`/`lat`/`lon`/`osm_id` + stamp `geocoded_at` (and if another facility already holds that `osm_id`, **merge** into it); no-match (HTTP 200 empty) → stamp `geocoded_at` only (stop retrying); transient (timeout/5xx) → leave `geocoded_at` NULL (retried next cycle).
 - `app/geocoding.py` is a **pure HTTP client** (no DB). `app/geocoding_worker.py` owns the DB/queue logic. `crud.py` stays DB-only; routers do a plain upsert (no network).
 - ⚠️ The **public** Nominatim endpoint forbids parallel requests (~1 req/sec, identifying `User-Agent` required). `geocoding_concurrency` defaults to `1` and `geocoding_request_delay` to `1.0s`; raise concurrency only against a self-hosted/commercial instance via `NOMINATIM_BASE_URL`.
 - **Manual drain:** `uv run python scripts/backfill_addresses.py [--limit N] [--dry-run]` runs the same `process_pending_batch` (e.g. without the web app, or when the worker is disabled).

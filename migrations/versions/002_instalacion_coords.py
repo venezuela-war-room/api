@@ -43,8 +43,22 @@ def upgrade() -> None:
         postgresql_where=sa.text("geocoded_at IS NULL"),
     )
 
+    # Canonical OpenStreetMap identity ("{osm_type}/{osm_id}", e.g. "way/228913258").
+    # Variant facility names that geocode to the same OSM place share this id; the
+    # worker merges them. The partial UNIQUE index enforces one facility per place.
+    op.add_column("instalaciones", sa.Column("osm_id", sa.String(), nullable=True))
+    op.create_index(
+        "uq_instalaciones_osm_id",
+        "instalaciones",
+        ["osm_id"],
+        unique=True,
+        postgresql_where=sa.text("osm_id IS NOT NULL"),
+    )
+
 
 def downgrade() -> None:
+    op.drop_index("uq_instalaciones_osm_id", table_name="instalaciones")
+    op.drop_column("instalaciones", "osm_id")
     op.drop_index("ix_instalaciones_pending_geocode", table_name="instalaciones")
     op.drop_column("instalaciones", "geocoded_at")
     op.drop_column("instalaciones", "lon")

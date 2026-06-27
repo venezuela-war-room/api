@@ -11,6 +11,7 @@ erDiagram
         VARCHAR     direccion               "address — client-supplied or geocoded"
         FLOAT       lat                     "latitude (from OpenStreetMap)"
         FLOAT       lon                     "longitude (from OpenStreetMap)"
+        VARCHAR     osm_id                  "canonical '{osm_type}/{osm_id}' — one facility per OSM place"
         TIMESTAMPTZ geocoded_at             "NULL = pending geocoding; set once attempted"
         TIMESTAMPTZ created_at              "auto"
     }
@@ -111,14 +112,19 @@ found_people.ubicacion_id
 | `found_people` | `api_key_id` | B-tree | Per-team record queries |
 | `found_people` | `fallecido` | B-tree | Deceased filter |
 | `found_people` | `full_name` (GIN trgm) | GIN | Fuzzy name search via `pg_trgm` |
-| `instalaciones` | `(tipo, normalized_nombre)` | Unique | Facility dedup per type |
+| `instalaciones` | `(tipo, normalized_nombre)` | Unique | Facility dedup per type (normalized name) |
+| `instalaciones` | `osm_id` WHERE `osm_id IS NOT NULL` | Partial Unique | One facility per OpenStreetMap place |
 | `instalaciones` | `created_at` WHERE `geocoded_at IS NULL` | Partial B-tree | Geocoding worker's pending-queue scan |
 | `ubicaciones` | `(instalacion_id, normalized_detalles)` | Unique | Location dedup per facility+ward |
 
 ## Geocoding
 
-`direccion`, `lat`, and `lon` on `instalaciones` are filled by a background worker (see the
-[ETL diagram](etl-diagram.md)). `geocoded_at` is the queue marker: `NULL` means the facility
+`direccion`, `lat`, `lon`, and `osm_id` on `instalaciones` are filled by a background worker (see
+the [ETL diagram](etl-diagram.md)). `geocoded_at` is the queue marker: `NULL` means the facility
 still needs an address; the worker claims those rows (`FOR UPDATE SKIP LOCKED`), calls
 OpenStreetMap Nominatim, and stamps `geocoded_at`. A client-supplied `direccion` is stored on
 ingestion and pre-marks the row done.
+
+`osm_id` (`"{osm_type}/{osm_id}"`) is the **canonical facility identity**: name variants that
+resolve to the same OSM place are merged into one row by the worker (`crud.merge_instalacion`),
+enforced by the partial unique index. This is the second dedup layer on top of `normalized_nombre`.
