@@ -1,4 +1,4 @@
-# Terremoto Venezuela War Room API
+# Terremoto API
 
 REST API for searching and managing records of people found or hospitalized after the **Venezuela earthquake of June 24, 2026**. Built to consolidate data from multiple volunteer teams into a single queryable source of truth.
 
