@@ -35,8 +35,10 @@ def parse_row(row: dict) -> dict | None:
         "full_name": full_name,
         "document_id": document_id,
         "age": age,
+        # The "Hospital / Área" column mixes real facility names with free-text area
+        # descriptions, so we DON'T blanket-tag it as a hospital — the API's classifier
+        # (crud._looks_like_facility) decides whether it becomes a facility or a detalle.
         "ubicacion_actual": row.get("Hospital / Área", "").strip() or None,
-        "tipo_instalacion": "hospital",
         "ubicacion_detalles": row.get("Servicio / Lista", "").strip() or None,
         "lugar_procedencia": row.get("Procedencia / Zona", "").strip() or None,
         "relevant_info": row.get("Nota", "").strip() or None,

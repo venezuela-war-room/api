@@ -28,6 +28,41 @@ def test_normalize_facility_keeps_distinct_places():
     assert crud._normalize_facility("Hospital Vargas") != crud._normalize_facility("Clínica Vargas")
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Hospital Domingo Luciani",
+        "Hosp. Pérez Carreño",
+        "Albergue Catia",
+        "Pérez Carreño",
+        "CDI Petare",
+        "Clínica Santa Ana",
+    ],
+)
+def test_looks_like_facility_accepts_places(name):
+    assert crud._looks_like_facility(name) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Está en el área de pediatría del Pérez carreño",
+        "lo trasladaron a otro piso",
+        "se encuentra en observación",
+        "paciente reportado por su familia en la sala de espera",
+    ],
+)
+def test_looks_like_facility_rejects_free_text(name):
+    assert crud._looks_like_facility(name) is False
+
+
+def test_combine_detalles_dedups_and_joins():
+    assert crud._combine_detalles("Área de pediatría", "Piso 3") == "Área de pediatría — Piso 3"
+    assert crud._combine_detalles(None, "Piso 3") == "Piso 3"
+    assert crud._combine_detalles("Igual", "Igual") == "Igual"
+    assert crud._combine_detalles(None, None) is None
+
+
 @pytest.mark.asyncio
 async def test_find_or_create_instalacion_dedup(db: AsyncSession):
     i1 = await crud.find_or_create_instalacion(db, "hospital", "Hosp. José Gregorio Hernández")
@@ -265,3 +300,61 @@ async def test_merge_instalacion_backfills_missing_fields(db: AsyncSession):
     assert target.direccion == "Calle 1"
     assert target.lat == 10.5
     assert target.osm_id == "way/999"
+
+
+@pytest.mark.asyncio
+async def test_upsert_free_text_ubicacion_becomes_detalle(db: AsyncSession):
+    payload = PersonCreate(
+        full_name="Free Text Location Test",
+        ubicacion_actual="Está en el área de pediatría del Pérez carreño",
+        tipo_instalacion="hospital",  # source mis-tags it; classifier should override
+        source_hash="free-text-loc-v1",
+    )
+    person, _ = await crud.upsert_person(db, payload)
+    await db.commit()
+
+    # No facility was created; the text lives as a ward detail with no instalacion.
+    assert person.ubicacion is not None
+    assert person.ubicacion.instalacion_id is None
+    assert person.ubicacion.instalacion is None
+    assert "área de pediatría" in person.ubicacion.detalles
+
+    facilities = (
+        await db.execute(
+            select(Instalacion).where(Instalacion.nombre == "Está en el área de pediatría del Pérez carreño")
+        )
+    ).scalars().all()
+    assert facilities == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_real_facility_still_created(db: AsyncSession):
+    payload = PersonCreate(
+        full_name="Real Facility Test",
+        ubicacion_actual="Hospital Domingo Luciani Routing",
+        tipo_instalacion="hospital",
+        source_hash="real-facility-routing-v1",
+    )
+    person, _ = await crud.upsert_person(db, payload)
+    await db.commit()
+    assert person.ubicacion.instalacion is not None
+    assert person.ubicacion.instalacion.nombre == "Hospital Domingo Luciani Routing"
+
+
+@pytest.mark.asyncio
+async def test_demote_instalacion_to_detalle(db: AsyncSession):
+    inst = await crud.find_or_create_instalacion(db, "hospital", "Demote Me Nombre")
+    ward = await crud.find_or_create_ubicacion(db, inst.id, "Piso 2")
+    person = FoundPerson(full_name="Demote Person", source_hash="demote-person-v1", ubicacion_id=ward.id)
+    db.add(person)
+    await db.flush()
+
+    await crud.demote_instalacion_to_detalle(db, inst)
+    await db.commit()
+
+    # Facility row is gone; the person's ubicacion now has no facility and folds the name in.
+    assert (await db.execute(select(Instalacion).where(Instalacion.id == inst.id))).scalar_one_or_none() is None
+    moved = (await db.execute(select(Ubicacion).where(Ubicacion.id == ward.id))).scalar_one()
+    assert moved.instalacion_id is None
+    assert "Demote Me Nombre" in moved.detalles
+    assert "Piso 2" in moved.detalles

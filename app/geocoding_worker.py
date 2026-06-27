@@ -54,7 +54,7 @@ async def process_pending_batch(db: AsyncSession) -> int:
     # which also lets variants converge on the same osm_id.
     outcomes = await geocode_batch(i.normalized_nombre for i in instalaciones)
 
-    geocoded = merged = no_match = skipped = 0
+    geocoded = merged = no_match = demoted = skipped = 0
     now = crud._utcnow()
     # Canonical facility per OSM place resolved during this batch (catches intra-batch dups
     # before they hit the partial-unique index on osm_id).
@@ -100,17 +100,25 @@ async def process_pending_batch(db: AsyncSession) -> int:
                 "Geocoded facility %s %r -> osm_id=%s, direccion=%r.",
                 inst.id, inst.nombre, result.osm_id, result.direccion,
             )
-        else:
+        elif crud._has_facility_keyword(inst.nombre):
+            # A named facility (e.g. "Hospital …") OSM just doesn't have — keep it as an
+            # unconfirmed facility (osm_id stays NULL); don't destroy a real place.
             inst.geocoded_at = now
             no_match += 1
-            logger.info("Facility %s %r: no OSM match; marked done.", inst.id, inst.nombre)
+            logger.info("Facility %s %r: no OSM match but named facility; kept unconfirmed.", inst.id, inst.nombre)
+        else:
+            # Keyword-less and unresolvable — it slipped past the ingest gate and is almost
+            # certainly free text. Demote it back to a plain location detail.
+            logger.info("Facility %s %r: no OSM match and not a named facility; demoting to detalle.", inst.id, inst.nombre)
+            await crud.demote_instalacion_to_detalle(db, inst)
+            demoted += 1
 
     await db.commit()
     logger.info(
-        "Geocoding batch done: %d geocoded, %d merged, %d no-match, %d left pending (of %d claimed).",
-        geocoded, merged, no_match, skipped, len(instalaciones),
+        "Geocoding batch done: %d geocoded, %d merged, %d no-match, %d demoted, %d left pending (of %d claimed).",
+        geocoded, merged, no_match, demoted, skipped, len(instalaciones),
     )
-    return geocoded + merged + no_match
+    return geocoded + merged + no_match + demoted
 
 
 async def run_worker() -> None:

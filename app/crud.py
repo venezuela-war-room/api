@@ -59,6 +59,56 @@ def _normalize_facility(nombre: str) -> str:
     return result or _normalize(nombre)
 
 
+# Words that name a real, geocodeable facility TYPE. A `ubicacion_actual` containing one
+# is treated as a facility; otherwise it is likely free-text and routed to ubicacion.detalles.
+_FACILITY_KEYWORDS = {
+    "hospital", "clinica", "ambulatorio", "maternidad", "cdi", "cdm", "centro",
+    "policlinica", "policlinico", "dispensario", "hospitalito", "materno", "modulo",
+    "albergue", "refugio", "morgue", "ipasme", "ivss", "seguro", "sanatorio", "instituto",
+}
+# Tokens that signal prose/description rather than a place name ("está en el área de…").
+_PROSE_MARKERS = {
+    "esta", "estan", "en", "area", "areas", "se", "encuentra", "encuentran", "fue",
+    "fueron", "ingreso", "ingresado", "ingresada", "trasladado", "trasladada",
+    "trasladaron", "lo", "piso", "cama", "sala", "su", "para", "que", "ubicado",
+    "ubicada", "reportado", "segun", "presenta", "con",
+}
+_MAX_NAME_TOKENS = 4  # a keyword-less real name (e.g. "Perez Carreno") is short
+_MAX_FACILITY_TOKENS = 6  # a keyword + lots of prose words → it's prose mentioning a place
+
+
+def _has_facility_keyword(nombre: str) -> bool:
+    """True if the name contains a facility-TYPE word (hospital, albergue, …)."""
+    return any(t in _FACILITY_KEYWORDS for t in _normalize_facility(nombre).split())
+
+
+def _looks_like_facility(nombre: str) -> bool:
+    """Heuristic: does this string name a real (geocodeable) facility, or is it free text?
+
+    Deterministic first-pass gate at ingestion; the geocoding worker is the backstop that
+    demotes anything keyword-less that fails to resolve.
+    """
+    tokens = _normalize_facility(nombre).split()
+    if not tokens:
+        return False
+    has_keyword = any(t in _FACILITY_KEYWORDS for t in tokens)
+    has_prose = any(t in _PROSE_MARKERS for t in tokens)
+    if has_keyword:
+        # A keyword buried in a long, prose-y string is description, not a name.
+        return not (has_prose and len(tokens) > _MAX_FACILITY_TOKENS)
+    # No keyword: only a short, prose-free string is plausibly a bare facility name.
+    return not has_prose and len(tokens) <= _MAX_NAME_TOKENS
+
+
+def _combine_detalles(*parts: str | None) -> str | None:
+    """Join non-empty location-detail fragments into one, deduped, preserving order."""
+    seen: list[str] = []
+    for part in parts:
+        if part and part.strip() and part.strip() not in seen:
+            seen.append(part.strip())
+    return " — ".join(seen) or None
+
+
 def _compute_hash(full_name: str, document_id: str | None, ubicacion_actual: str | None, tipo_instalacion: str | None) -> str:
     parts = "|".join([full_name.lower(), document_id or "", ubicacion_actual or "", tipo_instalacion or ""])
     return hashlib.sha256(parts.encode()).hexdigest()
@@ -166,6 +216,45 @@ async def merge_instalacion(db: AsyncSession, source: Instalacion, target: Insta
     return target
 
 
+async def demote_instalacion_to_detalle(db: AsyncSession, inst: Instalacion) -> None:
+    """Turn a facility row back into plain location detail(s) with no facility.
+
+    Used when a string that slipped past the ingestion gate turns out not to be a real
+    place (the geocoder finds no match). Each of the facility's ubicaciones keeps its
+    people but loses the facility link; the facility name is folded into `detalles` so the
+    information isn't lost. Colliding NULL-facility wards are merged. Core SQL throughout
+    (ORM cascade would lazy-load in the async session).
+    """
+    # Existing NULL-facility ubicaciones we might collide with after demotion.
+    null_ubis = await db.execute(
+        select(Ubicacion.id, Ubicacion.normalized_detalles).where(Ubicacion.instalacion_id.is_(None))
+    )
+    by_detalles = {norm: uid for uid, norm in null_ubis.all()}
+
+    source_ubis = await db.execute(select(Ubicacion).where(Ubicacion.instalacion_id == inst.id))
+    for ubi in source_ubis.scalars().all():
+        new_detalles = _combine_detalles(inst.nombre, ubi.detalles)
+        new_norm = _normalize(new_detalles) if new_detalles else ""
+        existing_id = by_detalles.get(new_norm)
+        if existing_id is not None and existing_id != ubi.id:
+            # A NULL-facility ward with the same text already exists — fold into it.
+            await db.execute(
+                update(FoundPerson).where(FoundPerson.ubicacion_id == ubi.id).values(ubicacion_id=existing_id)
+            )
+            await db.execute(delete(Ubicacion).where(Ubicacion.id == ubi.id))
+        else:
+            await db.execute(
+                update(Ubicacion)
+                .where(Ubicacion.id == ubi.id)
+                .values(instalacion_id=None, detalles=new_detalles, normalized_detalles=new_norm)
+            )
+            by_detalles[new_norm] = ubi.id
+
+    await db.flush()
+    await db.execute(delete(Instalacion).where(Instalacion.id == inst.id))
+    db.expunge(inst)
+
+
 def _person_load_options():
     return [
         selectinload(FoundPerson.ubicacion).selectinload(Ubicacion.instalacion),
@@ -180,7 +269,7 @@ async def upsert_person(
 ) -> tuple[FoundPerson, bool]:
     ubicacion_id: uuid.UUID | None = None
 
-    if payload.ubicacion_actual:
+    if payload.ubicacion_actual and _looks_like_facility(payload.ubicacion_actual):
         tipo = payload.tipo_instalacion or "unknown"
         # Store any client-supplied address; coordinates are filled later by the
         # background geocoding worker (app/geocoding_worker.py).
@@ -189,9 +278,13 @@ async def upsert_person(
         )
         ubicacion = await find_or_create_ubicacion(db, instalacion.id, payload.ubicacion_detalles)
         ubicacion_id = ubicacion.id
-    elif payload.ubicacion_detalles:
-        ubicacion = await find_or_create_ubicacion(db, None, payload.ubicacion_detalles)
-        ubicacion_id = ubicacion.id
+    else:
+        # ubicacion_actual is free-text (not a real facility) — keep it as a location
+        # detail with no facility, alongside any explicit detalles. Never geocoded.
+        detalles = _combine_detalles(payload.ubicacion_actual, payload.ubicacion_detalles)
+        if detalles:
+            ubicacion = await find_or_create_ubicacion(db, None, detalles)
+            ubicacion_id = ubicacion.id
 
     source_hash = payload.source_hash or _compute_hash(
         payload.full_name, payload.document_id, payload.ubicacion_actual, payload.tipo_instalacion
