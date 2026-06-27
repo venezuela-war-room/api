@@ -190,6 +190,30 @@ uv run python scripts/import_csv.py consolidado.csv \
   --api-url http://localhost:8000
 ```
 
+### Seed test data
+
+For a small, predictable dataset (5 hospitals + ward locations + 5 sample people)
+to develop or test against, run the seed script. It talks to the database directly,
+so point `DATABASE_URL` at your target — for the docker compose Postgres:
+
+```bash
+DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
+  uv run python scripts/seed_test_data.py
+```
+
+The script is **idempotent** (`ON CONFLICT (id) DO NOTHING`), so re-running it is
+safe and reports how many rows were newly inserted. Pass `--reset` to delete the
+seeded rows first (scoped to their known ids, child → parent order) for a clean
+wipe-and-reseed:
+
+```bash
+DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5432/terremoto" \
+  uv run python scripts/seed_test_data.py --reset
+```
+
+> The seeded `api_key` is a placeholder — its hash matches no real key, so it only
+> satisfies the `found_people` foreign key. It will not authenticate API requests.
+
 ---
 
 ## Environment Variables
@@ -260,6 +284,7 @@ migrations/
   versions/002_instalacion_coords.py lat/lon + geocoding queue (geocoded_at)
 scripts/
   import_csv.py            One-shot CSV importer
+  seed_test_data.py        Seed a small fixed test dataset (--reset to wipe + reseed)
   backfill_addresses.py    Drain the geocoding queue on demand
   dedup_facilities.py      Merge duplicate facilities by canonical name
 docs/
