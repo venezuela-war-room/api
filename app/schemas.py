@@ -148,14 +148,6 @@ class UbicacionInfo(BaseModel):
     model_config = {"from_attributes": True}
 
 
-class ApiKeyInfo(BaseModel):
-    id: uuid.UUID
-    team_name: str
-    key_prefix: str
-
-    model_config = {"from_attributes": True}
-
-
 class PersonResponse(BaseModel):
     id: uuid.UUID
     full_name: str
@@ -167,7 +159,6 @@ class PersonResponse(BaseModel):
     fallecido: bool
     source_url: str | None
     status: str
-    api_key: ApiKeyInfo | None
     created_at: datetime
     updated_at: datetime
 

@@ -258,7 +258,6 @@ async def demote_instalacion_to_detalle(db: AsyncSession, inst: Instalacion) -> 
 def _person_load_options():
     return [
         selectinload(FoundPerson.ubicacion).selectinload(Ubicacion.instalacion),
-        selectinload(FoundPerson.api_key),
     ]
 
 

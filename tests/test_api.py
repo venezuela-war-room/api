@@ -86,7 +86,7 @@ async def test_bulk_upsert_valid(client: AsyncClient, admin_key):
     assert body["created"] == 2
     assert body["updated"] == 0
     assert len(body["data"]) == 2
-    assert body["data"][0]["api_key"]["team_name"] == "test-team"
+    assert "api_key" not in body["data"][0]
     assert body["data"][0]["ubicacion"]["instalacion"]["tipo"] == "hospital"
     assert body["data"][0]["fallecido"] is False
 
