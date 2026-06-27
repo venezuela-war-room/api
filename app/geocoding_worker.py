@@ -47,12 +47,14 @@ async def process_pending_batch(db: AsyncSession) -> int:
     if not instalaciones:
         return 0
 
+    logger.info("Geocoding batch: claimed %d pending facilit(ies).", len(instalaciones))
+
     # Geocode the canonical (normalized) name, not the raw one: Nominatim fails on
     # abbreviations like "Hosp. Domingo Luciani" but resolves "hospital domingo luciani",
     # which also lets variants converge on the same osm_id.
     outcomes = await geocode_batch(i.normalized_nombre for i in instalaciones)
 
-    processed = 0
+    geocoded = merged = no_match = skipped = 0
     now = crud._utcnow()
     # Canonical facility per OSM place resolved during this batch (catches intra-batch dups
     # before they hit the partial-unique index on osm_id).
@@ -61,6 +63,8 @@ async def process_pending_batch(db: AsyncSession) -> int:
         outcome = outcomes.get(inst.normalized_nombre)
         if outcome is None or not outcome.completed:
             # Geocoding disabled or a transient failure — leave pending for a retry.
+            skipped += 1
+            logger.debug("Facility %s %r: no result (transient/disabled); left pending.", inst.id, inst.nombre)
             continue
         result = outcome.result
 
@@ -75,9 +79,13 @@ async def process_pending_batch(db: AsyncSession) -> int:
                 canonical = existing.scalar_one_or_none()
             if canonical is not None and canonical.id != inst.id:
                 # Same real place already has a facility row — fold this one into it.
+                logger.info(
+                    "Merged facility %s %r into %s %r (osm_id=%s).",
+                    inst.id, inst.nombre, canonical.id, canonical.nombre, result.osm_id,
+                )
                 await crud.merge_instalacion(db, inst, canonical)
                 seen_osm[result.osm_id] = canonical
-                processed += 1
+                merged += 1
                 continue
             inst.osm_id = result.osm_id
             seen_osm[result.osm_id] = inst
@@ -86,11 +94,23 @@ async def process_pending_batch(db: AsyncSession) -> int:
             inst.direccion = result.direccion
             inst.lat = result.lat
             inst.lon = result.lon
-        inst.geocoded_at = now
-        processed += 1
+            inst.geocoded_at = now
+            geocoded += 1
+            logger.info(
+                "Geocoded facility %s %r -> osm_id=%s, direccion=%r.",
+                inst.id, inst.nombre, result.osm_id, result.direccion,
+            )
+        else:
+            inst.geocoded_at = now
+            no_match += 1
+            logger.info("Facility %s %r: no OSM match; marked done.", inst.id, inst.nombre)
 
     await db.commit()
-    return processed
+    logger.info(
+        "Geocoding batch done: %d geocoded, %d merged, %d no-match, %d left pending (of %d claimed).",
+        geocoded, merged, no_match, skipped, len(instalaciones),
+    )
+    return geocoded + merged + no_match
 
 
 async def run_worker() -> None:

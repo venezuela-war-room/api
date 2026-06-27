@@ -8,7 +8,10 @@ from fastapi.responses import RedirectResponse
 
 from app.config import settings
 from app.geocoding_worker import run_worker
+from app.logging_config import configure_logging
 from app.routers import admin, health, people
+
+configure_logging()
 
 API_DESCRIPTION = """
 Shared search layer for tracking people found, hospitalized, or sheltered after the

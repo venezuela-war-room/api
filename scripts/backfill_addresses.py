@@ -27,6 +27,7 @@ from sqlalchemy import func, select  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.database import AsyncSessionLocal  # noqa: E402
 from app.geocoding_worker import process_pending_batch  # noqa: E402
+from app.logging_config import configure_logging  # noqa: E402
 from app.models import Instalacion  # noqa: E402
 
 
@@ -70,6 +71,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=None, help="Approx. max facilities to process.")
     parser.add_argument("--dry-run", action="store_true", help="Count pending without writing.")
     args = parser.parse_args()
+    configure_logging()  # surface the worker's per-record geocoding logs
     asyncio.run(backfill(args.limit, args.dry_run))
 
 

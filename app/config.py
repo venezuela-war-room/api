@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     master_admin_key: str = "change-me-in-production"
     cors_origins: list[str] = ["*"]
     debug: bool = False
+    log_level: str = "INFO"
 
     # ── Geocoding (OpenStreetMap Nominatim) ──────────────────────────────────
     # Fills instalacion.direccion / lat / lon when a record arrives without an
