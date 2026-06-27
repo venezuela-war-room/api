@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     master_admin_key: str = "change-me-in-production"
     cors_origins: list[str] = ["*"]
     debug: bool = False
+    environment: str = "production"
+    posthog_api_key: str | None = None
+    posthog_host: str = "https://us.i.posthog.com"
 
     @field_validator("database_url")
     @classmethod
