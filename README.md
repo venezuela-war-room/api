@@ -149,7 +149,7 @@ Bulk request example:
 }
 ```
 
-If `source_hash` is omitted, the API generates one from `sha256(full_name|document_id|ubicacion_actual|tipo_instalacion)`.
+If `source_hash` is omitted, the API generates a fallback person key from `document_id` when present, otherwise from the normalized name. Location is intentionally excluded so the same person reported in multiple wards or source rows updates one public record instead of creating duplicates.
 
 Bulk response:
 

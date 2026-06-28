@@ -309,3 +309,28 @@ async def test_admin_list_keys(client: AsyncClient):
     assert isinstance(r.json(), list)
     for item in r.json():
         assert "key" not in item
+
+@pytest.mark.asyncio
+async def test_bulk_upsert_dedupes_same_name_without_source_hash(client: AsyncClient, admin_key):
+    raw_key, _ = admin_key
+    first = await client.post(
+        "/api/v1/found-people/bulk",
+        json={"people": [{"full_name": "Norelys Piñerua API", "ubicacion_actual": "Hospital A"}]},
+        headers={"X-Admin-Key": raw_key},
+    )
+    assert first.status_code == 201
+    assert first.json()["created"] == 1
+
+    second = await client.post(
+        "/api/v1/found-people/bulk",
+        json={"people": [{"full_name": "Norelys Piñerua API", "ubicacion_actual": "Hospital B"}]},
+        headers={"X-Admin-Key": raw_key},
+    )
+    assert second.status_code == 201
+    assert second.json()["created"] == 0
+    assert second.json()["updated"] == 1
+
+    search = await client.get("/api/v1/found-people?name=pi%C3%B1erua%20api")
+    assert search.status_code == 200
+    matches = [p for p in search.json()["data"] if p["full_name"] == "Norelys Piñerua API"]
+    assert len(matches) == 1

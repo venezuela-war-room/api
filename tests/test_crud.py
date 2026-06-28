@@ -358,3 +358,69 @@ async def test_demote_instalacion_to_detalle(db: AsyncSession):
     assert moved.instalacion_id is None
     assert "Demote Me Nombre" in moved.detalles
     assert "Piso 2" in moved.detalles
+
+@pytest.mark.asyncio
+async def test_fallback_hash_dedupes_same_name_across_locations(db: AsyncSession):
+    first = PersonCreate(
+        full_name="Norelys Piñerua Dedupcase",
+        ubicacion_actual="Hospital A",
+        tipo_instalacion="hospital",
+        relevant_info="Primer reporte",
+    )
+    second = PersonCreate(
+        full_name="Norelys Piñerua Dedupcase",
+        ubicacion_actual="Hospital B",
+        tipo_instalacion="hospital",
+        relevant_info="Segundo reporte más completo",
+    )
+
+    p1, inserted1 = await crud.upsert_person(db, first)
+    await db.commit()
+    p2, inserted2 = await crud.upsert_person(db, second)
+    await db.commit()
+
+    assert inserted1 is True
+    assert inserted2 is False
+    assert p1.id == p2.id
+    assert p2.relevant_info == "Segundo reporte más completo"
+
+    params = SearchParams(name="piñerua dedupcase")
+    results, total = await crud.search_people(db, params)
+    matches = [p for p in results if crud._normalize(p.full_name) == "norelys pinerua dedupcase"]
+    assert len(matches) == 1
+    assert total == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_hash_prefers_document_id_across_name_location_changes(db: AsyncSession):
+    first = PersonCreate(
+        full_name="Norelys Piñerua",
+        document_id="12345678",
+        ubicacion_actual="Hospital A",
+    )
+    second = PersonCreate(
+        full_name="Norelys Piñerua Actualizada",
+        document_id="12345678",
+        ubicacion_actual="Hospital B",
+    )
+
+    p1, inserted1 = await crud.upsert_person(db, first)
+    await db.commit()
+    p2, inserted2 = await crud.upsert_person(db, second)
+    await db.commit()
+
+    assert inserted1 is True
+    assert inserted2 is False
+    assert p1.id == p2.id
+    assert p2.full_name == "Norelys Piñerua Actualizada"
+
+
+@pytest.mark.asyncio
+async def test_search_name_unaccents_query_pattern(db: AsyncSession):
+    await crud.upsert_person(db, PersonCreate(full_name="Norelys Pinerua", source_hash="norelys-pinerua-unaccent"))
+    await db.commit()
+
+    results, total = await crud.search_people(db, SearchParams(name="Piñerua"))
+
+    assert total >= 1
+    assert any(p.full_name == "Norelys Pinerua" for p in results)
